@@ -35,6 +35,30 @@ class TgMessageComposer:
         return message
 
     @staticmethod
+    def get_any_doctor_ready_message_md(
+        matches: list[tuple[str, ApiAppointment, str]],
+    ) -> str:
+        """Сообщение о подходящих талонах у любого врача специальности."""
+        nearest_matches = sorted(
+            matches,
+            key=lambda item: item[1].visitStart,
+        )[:5]
+
+        lines = []
+        for doctor_name, appointment, doctor_link in nearest_matches:
+            room_text = f", каб. {appointment.room}" if appointment.room else ""
+            lines.append(
+                f"• {appointment.visitStart:%d.%m.%Y %H:%M}{room_text}"
+                + f" — {doctor_name} — [записаться]({doctor_link})"
+            )
+
+        return (
+            "Нашлись подходящие талоны у врачей выбранной специальности.\n"
+            + "\n".join(lines)
+            + "\n\nОтслеживание отключено."
+        )
+
+    @staticmethod
     def get_doc_selected_message_md(
         doctor_name: str,
         free_participant_count: int,
