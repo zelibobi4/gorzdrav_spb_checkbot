@@ -12,16 +12,24 @@ class TgMessageComposer:
     ) -> str:
         appointments_text = ""
         if appointments:
-            nearest_appointments = sorted(
+            sorted_appointments = sorted(
                 appointments,
                 key=lambda x: x.visitStart,
-            )[:5]
-            appointments_text = "Подходящие талоны:\n" + "".join(
-                f"• {appointment.visitStart:%d.%m.%Y %H:%M}"
-                + (f", каб. {appointment.room}" if appointment.room else "")
-                + "\n"
-                for appointment in nearest_appointments
             )
+            shown_appointments = sorted_appointments[:20]
+            appointments_text = (
+                f"Сейчас подходит талонов: {len(sorted_appointments)}.\n"
+                + "".join(
+                    f"• {appointment.visitStart:%d.%m.%Y %H:%M}"
+                    + (f", каб. {appointment.room}" if appointment.room else "")
+                    + "\n"
+                    for appointment in shown_appointments
+                )
+            )
+            if len(sorted_appointments) > len(shown_appointments):
+                appointments_text += (
+                    f"…и ещё {len(sorted_appointments) - len(shown_appointments)}.\n"
+                )
 
         message = (
             f"Врач {doctor_name} доступен для записи.\n"
@@ -30,7 +38,7 @@ class TgMessageComposer:
             + f"Талонов для записи: {free_ticket_count}.\n"
             + "\n"
             + f"Запишитесь на приём по [ссылке]({doctor_link})\n\n"
-            + "Отслеживание отключено."
+            + "Отслеживание продолжается. Следующее сообщение придёт, когда появится новый подходящий талон."
         )
         return message
 
@@ -39,23 +47,29 @@ class TgMessageComposer:
         matches: list[tuple[str, ApiAppointment, str]],
     ) -> str:
         """Сообщение о подходящих талонах у любого врача специальности."""
-        nearest_matches = sorted(
+        sorted_matches = sorted(
             matches,
             key=lambda item: item[1].visitStart,
-        )[:5]
+        )
+        shown_matches = sorted_matches[:20]
 
         lines = []
-        for doctor_name, appointment, doctor_link in nearest_matches:
+        for doctor_name, appointment, doctor_link in shown_matches:
             room_text = f", каб. {appointment.room}" if appointment.room else ""
             lines.append(
                 f"• {appointment.visitStart:%d.%m.%Y %H:%M}{room_text}"
                 + f" — {doctor_name} — [записаться]({doctor_link})"
             )
 
+        hidden_count = len(sorted_matches) - len(shown_matches)
+        hidden_text = f"\n…и ещё {hidden_count}." if hidden_count > 0 else ""
+
         return (
-            "Нашлись подходящие талоны у врачей выбранной специальности.\n"
+            f"Сейчас найдено подходящих талонов: {len(sorted_matches)}.\n"
             + "\n".join(lines)
-            + "\n\nОтслеживание отключено."
+            + hidden_text
+            + "\n\nОтслеживание продолжается. "
+            + "Следующее сообщение придёт, когда появится новый подходящий талон."
         )
 
     @staticmethod
