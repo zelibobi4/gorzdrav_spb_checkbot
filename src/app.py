@@ -1,5 +1,6 @@
 import logging
 import multiprocessing
+import re
 from functools import wraps
 from typing import Any, Callable
 
@@ -243,6 +244,99 @@ def get_set_limit_command(message: Message):
         )
 
 
+def _parse_time_value(value: str) -> int:
+    """Преобразует HH:MM в минуты от начала суток."""
+    hour_str, minute_str = value.split(":", maxsplit=1)
+    hour = int(hour_str)
+    minute = int(minute_str)
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise ValueError("Некорректное время")
+    return hour * 60 + minute
+
+
+def _format_time_minutes(value: int | None) -> str:
+    if value is None:
+        return ""
+    return f"{value // 60:02d}:{value % 60:02d}"
+
+
+@bot.message_handler(commands=["evening"])  # type: ignore
+@is_user_profile
+def set_evening_filter(message: Message):
+    """Искать только вечерние талоны, начиная с 17:00."""
+    if message.from_user is None:
+        return
+    DB.set_time_filter(
+        user_id=message.from_user.id,
+        time_from_minutes=17 * 60,
+        time_to_minutes=23 * 60 + 59,
+    )
+    bot.reply_to(
+        message,
+        "Установлен вечерний фильтр: искать талоны с 17:00 до конца дня.",
+    )
+
+
+@bot.message_handler(commands=["time_off"])  # type: ignore
+@is_user_profile
+def reset_time_filter(message: Message):
+    """Сбрасывает ограничение по времени приёма."""
+    if message.from_user is None:
+        return
+    DB.reset_time_filter(user_id=message.from_user.id)
+    bot.reply_to(message, "Фильтр времени сброшен. Подходит любое время.")
+
+
+@bot.message_handler(
+    regexp=r"^/time(?:@\w+)?\s+\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}\s*$"
+)
+@is_user_profile
+def set_custom_time_filter(message: Message):
+    """Устанавливает произвольный диапазон времени, например /time 17:00-21:00."""
+    if message.from_user is None or not message.text:
+        return
+
+    match = re.search(
+        r"(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})",
+        message.text,
+    )
+    if match is None:
+        return
+
+    try:
+        time_from = _parse_time_value(match.group(1))
+        time_to = _parse_time_value(match.group(2))
+        if time_from > time_to:
+            raise ValueError("Начало диапазона позже конца")
+    except ValueError:
+        bot.reply_to(
+            message,
+            "Некорректный диапазон. Пример: /time 17:00-21:00",
+        )
+        return
+
+    DB.set_time_filter(
+        user_id=message.from_user.id,
+        time_from_minutes=time_from,
+        time_to_minutes=time_to,
+    )
+    bot.reply_to(
+        message,
+        "Установлен фильтр времени: "
+        + f"{_format_time_minutes(time_from)}–{_format_time_minutes(time_to)}.",
+    )
+
+
+@bot.message_handler(commands=["time"])  # type: ignore
+@is_user_profile
+def time_filter_help(message: Message):
+    bot.reply_to(
+        message,
+        "Укажите диапазон так: /time 17:00-21:00\n"
+        + "Для всего вечера используйте /evening, для сброса — /time_off.",
+    )
+
+
 @bot.message_handler(commands=["start"])  # type: ignore
 def start_message(message: Message):
     if message.from_user is None:
@@ -283,6 +377,9 @@ def get_help(message: Message):
         + "/7 - установить просмотр мест в течении недели\n"
         + "/n - установить просмотр мест в течении n-дней\n"
         + "/0 - искать свободные места в любое время\n"
+        + "/evening - искать только вечерние талоны после 17:00\n"
+        + "/time 17:00-21:00 - задать свой диапазон времени\n"
+        + "/time_off - сбросить фильтр времени\n"
         + "/delete - удалить профиль пользователя\n"
         + "/state - узнать текущее состояние бота\n\n"
         + "/set_doctor - выбрать врача и медицинское учреждение"
@@ -703,7 +800,16 @@ def ping_on(message: Message):
     user: DbUser | None = DB.get_user(user_id=user_id)
     if user is None:
         return
-    text = f"Отслеживание {f'в пределах {user.limit_days} дней ' if user.limit_days else ''}включено"
+    time_filter_text = ""
+    if user.time_from_minutes is not None or user.time_to_minutes is not None:
+        time_from = _format_time_minutes(user.time_from_minutes) or "00:00"
+        time_to = _format_time_minutes(user.time_to_minutes) or "23:59"
+        time_filter_text = f" с {time_from} до {time_to}"
+    text = (
+        f"Отслеживание "
+        + f"{f'в пределах {user.limit_days} дней ' if user.limit_days else ''}"
+        + f"включено{time_filter_text}"
+    )
     bot.reply_to(message=message, text=text)  # type: ignore
 
 
@@ -781,7 +887,18 @@ def get_status(message: Message):
     limit_days_text: str = f"Лимит дней: {
         user.limit_days if user.limit_days is not None else 'не установлен'
     }."
-    text: str = f"{gorzdrav_doctor}\n{ping_text}\n{limit_days_text}"
+    if user.time_from_minutes is None and user.time_to_minutes is None:
+        time_filter_text = "Время приёма: любое."
+    else:
+        time_from = _format_time_minutes(user.time_from_minutes) or "00:00"
+        time_to = _format_time_minutes(user.time_to_minutes) or "23:59"
+        time_filter_text = f"Время приёма: {time_from}–{time_to}."
+    text: str = (
+        f"{gorzdrav_doctor}\n"
+        + f"{ping_text}\n"
+        + f"{limit_days_text}\n"
+        + time_filter_text
+    )
     text += f"\n\nСсылка на запись: [ссылка]({link})"
     bot.reply_to(
         message=message,
