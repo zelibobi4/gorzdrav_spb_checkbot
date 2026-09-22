@@ -10,21 +10,22 @@ class TgMessageComposer:
         doctor_link: str,
         appointments: list[ApiAppointment],
     ) -> str:
-        nearest_appointment: ApiAppointment | None = None
-        nearest_appointment_str: str | None = None
-
+        appointments_text = ""
         if appointments:
-            nearest_appointment = sorted(
-                appointments, key=lambda x: x.visitStart, reverse=False
-            )[0]
-        
-            nearest_appointment_str = (
-                    f"Ближайший талон: {nearest_appointment.visitStart}.\n"
-                )
+            nearest_appointments = sorted(
+                appointments,
+                key=lambda x: x.visitStart,
+            )[:5]
+            appointments_text = "Подходящие талоны:\n" + "".join(
+                f"• {appointment.visitStart:%d.%m.%Y %H:%M}"
+                + (f", каб. {appointment.room}" if appointment.room else "")
+                + "\n"
+                for appointment in nearest_appointments
+            )
 
         message = (
             f"Врач {doctor_name} доступен для записи.\n"
-            + f"{nearest_appointment_str or ''}"
+            + appointments_text
             + f"Мест для записи: {free_participant_count}.\n"
             + f"Талонов для записи: {free_ticket_count}.\n"
             + "\n"
