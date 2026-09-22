@@ -139,8 +139,8 @@ def is_user_profile(func: Callable):
 
 def is_user_have_doctor(func: Callable):
     """
-    Декоратор для проверки наличия врача у пользователя.
-    Если врача нет, то отправляет сообщение об ошибке и возвращает None.
+    Проверяет, что пользователь выбрал цель отслеживания:
+    конкретного врача или любого врача выбранной специальности.
     """
 
     @wraps(func)
@@ -152,13 +152,22 @@ def is_user_have_doctor(func: Callable):
         if not message.from_user:
             return None
         user_id = message.from_user.id
-        # doctor = SyncOrm.get_user_doctor(user_id=user_id)
+
+        user = DB.get_user(user_id=user_id)
+        if (
+            user is not None
+            and user.watch_mode == "specialty"
+            and user.target_lpu_id is not None
+            and user.target_specialty_id is not None
+        ):
+            return func(message, *args, **kwargs)
 
         doctor = DB.get_user_doctor(user_id=user_id)
         if not doctor:
             bot.reply_to(
                 message=message,  # type: ignore
-                text="Пожалуйста добавьте врача.\n" + "Выполните команду /set_doctor",
+                text="Пожалуйста выберите врача или специальность.\n"
+                + "Выполните команду /set_doctor",
             )
             return None
         return func(message, *args, **kwargs)
