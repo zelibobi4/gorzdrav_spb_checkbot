@@ -51,7 +51,7 @@ class TgMessageComposer:
             matches,
             key=lambda item: item[1].visitStart,
         )
-        shown_matches = sorted_matches[:20]
+        shown_matches = sorted_matches[:10]
 
         lines = []
         for doctor_name, appointment, doctor_link in shown_matches:
