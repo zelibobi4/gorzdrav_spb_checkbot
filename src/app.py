@@ -391,7 +391,7 @@ def get_help(message: Message):
         + "/time_off - сбросить фильтр времени\n"
         + "/delete - удалить профиль пользователя\n"
         + "/state - узнать текущее состояние бота\n\n"
-        + "/set_doctor - выбрать врача и медицинское учреждение"
+        + "/set_doctor - выбрать врача или режим «любой врач специальности»"
     )
     bot.reply_to(message, text)  # type: ignore
 
@@ -668,7 +668,12 @@ def set_specialty(call: CallbackQuery):
     lpu = state_payload["lpu"]
     doctors = Gorzdrav.get_doctors(lpuId=lpu.id, specialtyId=specialty_id)
 
-    buttons = keyboard_service.get_doctor_buttons(doctors)
+    buttons = [
+        ButtonSchema(
+            text="👥 Любой врач этой специальности",
+            callback_data="doctor/any",
+        )
+    ] + keyboard_service.get_doctor_buttons(doctors)
 
     keyboard_service.save_buttons(
         user_id=call.from_user.id,
