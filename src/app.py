@@ -740,6 +740,31 @@ def set_doctor(call: CallbackQuery):
     lpu: api_models.ApiLPU = state_payload["lpu"]
     specialty_id = state_payload["specialty_id"]
 
+    if doctor_id == "any":
+        DB.set_user_specialty_watch(
+            user_id=user_id,
+            district_id=district_id,
+            lpu_id=lpu.id,
+            specialty_id=specialty_id,
+        )
+        SM.set_state(user_id=user_id, state_name=STATES_NAMES.HAVE_PROFILE)
+
+        user = DB.get_user(user_id=user_id)
+        ping_text = (
+            "включено" if user is not None and user.ping_status else "отключено"
+        )
+        bot.send_message(
+            chat_id=call.message.chat.id,
+            text=(
+                "Выбран режим: любой врач выбранной специальности.\n"
+                + f"Медучреждение: {lpu.lpuFullName or lpu.address or lpu.id}.\n"
+                + f"Отслеживание сейчас {ping_text}.\n\n"
+                + "Можно задать /evening или /time 17:00-21:00, "
+                + "а затем включить /on."
+            ),
+        )
+        return
+
     doctor: checker.Doctor | None = Gorzdrav.get_doctor(
         lpuId=lpu.id,
         specialtyId=specialty_id,
