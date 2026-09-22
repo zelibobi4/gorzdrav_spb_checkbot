@@ -41,6 +41,7 @@ class SqliteDb:
         """
         self.create_table_doctors()
         self.create_table_users()
+        self.migrate_users_table()
 
     def create_table_users(self):
         """
@@ -57,9 +58,26 @@ class SqliteDb:
             doctor_id VARCHAR(40),
             last_seen DATETIME,
             limit_days INTEGER,
+            time_from_minutes INTEGER,
+            time_to_minutes INTEGER,
             FOREIGN KEY (doctor_id) REFERENCES doctors (id)
         );"""
         self.cursor.execute(q)
+        self.connection.commit()
+
+    def migrate_users_table(self) -> None:
+        """Добавляет новые колонки в существующую SQLite БД без потери данных."""
+        columns = {
+            row[1] for row in self.cursor.execute("PRAGMA table_info(users);").fetchall()
+        }
+        if "time_from_minutes" not in columns:
+            self.cursor.execute(
+                "ALTER TABLE users ADD COLUMN time_from_minutes INTEGER;"
+            )
+        if "time_to_minutes" not in columns:
+            self.cursor.execute(
+                "ALTER TABLE users ADD COLUMN time_to_minutes INTEGER;"
+            )
         self.connection.commit()
 
     def create_table_doctors(self) -> None:
@@ -91,8 +109,8 @@ class SqliteDb:
         """
         q = """
         INSERT OR IGNORE INTO USERS
-        (id, ping_status, doctor_id, last_seen, limit_days)
-        values (?, ?, ?, ?, ?)
+        (id, ping_status, doctor_id, last_seen, limit_days, time_from_minutes, time_to_minutes)
+        values (?, ?, ?, ?, ?, ?, ?)
         """
         if user.last_seen is None:
             user.last_seen = datetime.datetime.now(datetime.UTC)
@@ -106,6 +124,8 @@ class SqliteDb:
                 user.doctor_id,
                 user.last_seen,
                 user.limit_days,
+                user.time_from_minutes,
+                user.time_to_minutes,
             ),
         )
         self.connection.commit()
@@ -119,12 +139,22 @@ class SqliteDb:
             ping_status,
             doctor_id,
             last_seen,
-            limit_days
+            limit_days,
+            time_from_minutes,
+            time_to_minutes
         FROM users WHERE id = ?"""
         result = self.cursor.execute(q, (user_id,)).fetchone()
         if result is None:
             return None
-        (id, ping_status, doctor_id, last_seen, limit_days) = result
+        (
+            id,
+            ping_status,
+            doctor_id,
+            last_seen,
+            limit_days,
+            time_from_minutes,
+            time_to_minutes,
+        ) = result
         timestamp = datetime.datetime.fromisoformat(last_seen)
         return DbUser(
             id=id,
@@ -132,6 +162,8 @@ class SqliteDb:
             doctor_id=doctor_id,
             last_seen=timestamp,
             limit_days=limit_days,
+            time_from_minutes=time_from_minutes,
+            time_to_minutes=time_to_minutes,
         )
 
     def add_doctor(self, doctor: DbDoctorToCreate) -> str:
@@ -353,7 +385,9 @@ class SqliteDb:
                 users.ping_status,
                 users.doctor_id,
                 users.last_seen,
-                users.limit_days
+                users.limit_days,
+                users.time_from_minutes,
+                users.time_to_minutes
             FROM users
             WHERE users.doctor_id == ?;
         """
@@ -366,10 +400,44 @@ class SqliteDb:
                 doctor_id=d[2],
                 last_seen=d[3],
                 limit_days=d[4],
+                time_from_minutes=d[5],
+                time_to_minutes=d[6],
             )
             for d in results
         ]
         return users
+
+    def set_time_filter(
+        self,
+        user_id: int,
+        time_from_minutes: int | None,
+        time_to_minutes: int | None,
+    ) -> None:
+        """Устанавливает диапазон времени приёма в минутах от начала суток."""
+        for value in (time_from_minutes, time_to_minutes):
+            if value is not None and not 0 <= value <= 1439:
+                raise ValueError("time filter must be between 0 and 1439 minutes")
+        if (
+            time_from_minutes is not None
+            and time_to_minutes is not None
+            and time_from_minutes > time_to_minutes
+        ):
+            raise ValueError("time_from_minutes must be <= time_to_minutes")
+        q = """
+        UPDATE users
+        SET time_from_minutes = ?, time_to_minutes = ?
+        WHERE id = ?;
+        """
+        self.cursor.execute(q, (time_from_minutes, time_to_minutes, user_id))
+        self.connection.commit()
+
+    def reset_time_filter(self, user_id: int) -> None:
+        """Сбрасывает фильтр времени приёма."""
+        self.set_time_filter(
+            user_id=user_id,
+            time_from_minutes=None,
+            time_to_minutes=None,
+        )
 
     def set_limit_days(self, user_id: int, limit_days: int | None):
         """Устанавливает кол-во дней для поиска"""
@@ -402,7 +470,9 @@ class SqliteDb:
             users.ping_status,
             users.doctor_id,
             users.last_seen,
-            users.limit_days
+            users.limit_days,
+            users.time_from_minutes,
+            users.time_to_minutes
         FROM doctors
         JOIN users ON doctors.id = users.doctor_id
         WHERE ping_status == 1;
@@ -424,6 +494,8 @@ class SqliteDb:
                     doctor_id=d[7],
                     last_seen=d[8],
                     limit_days=d[9],
+                    time_from_minutes=d[10],
+                    time_to_minutes=d[11],
                 ),
             )
             for d in results
