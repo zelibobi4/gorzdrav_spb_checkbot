@@ -34,8 +34,8 @@ def old_scheduler(timeout_secs: int):
 
 
 def _appointment_key(doctor_id: str, appointment: ApiAppointment) -> str:
-    """Стабильный ключ талона для антиспам-снимка."""
-    return f"{doctor_id}:{appointment.id}"
+    """Стабильный ключ слота: врач + фактическое время приёма."""
+    return f"{doctor_id}:{appointment.visitStart.isoformat()}"
 
 
 def raw_sql_checker():
