@@ -57,7 +57,17 @@ def raw_sql_checker():
         if api_doctor is None:
             continue
 
-        if not api_doctor.have_free_places:
+        doctor_users = doc_with_users.pinging_users
+
+        # Для фильтров нельзя полагаться только на freeParticipantCount:
+        # API Горздрава иногда отдаёт appointments при нулевом счётчике врача.
+        need_appointments = any(
+            (user.limit_days is not None and user.limit_days > 0)
+            or user.time_from_minutes is not None
+            or user.time_to_minutes is not None
+            for user in doctor_users
+        )
+        if not api_doctor.have_free_places and not need_appointments:
             continue
 
         link: str = Gorzdrav.generate_link(
@@ -69,13 +79,6 @@ def raw_sql_checker():
 
         # Реальные appointments нужны, если хотя бы один пользователь фильтрует
         # результат по дате или времени.
-        doctor_users = doc_with_users.pinging_users
-        need_appointments = any(
-            user.limit_days
-            or user.time_from_minutes is not None
-            or user.time_to_minutes is not None
-            for user in doctor_users
-        )
         appointments: list[ApiAppointment] = []
         if need_appointments:
             appointments = Gorzdrav.get_appointments(
@@ -88,7 +91,7 @@ def raw_sql_checker():
             logger.debug("user: %s", user.model_dump_json(indent=2))
 
             user_has_filters = (
-                bool(user.limit_days)
+                (user.limit_days is not None and user.limit_days > 0)
                 or user.time_from_minutes is not None
                 or user.time_to_minutes is not None
             )
