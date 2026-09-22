@@ -29,6 +29,7 @@ def old_scheduler(timeout_secs: int):
     while True:
         DB.inactivate_ping_for_old_users(inactive_months=2)
         raw_sql_checker()
+        raw_sql_specialty_checker()
         time.sleep(timeout_secs)
 
 
@@ -118,6 +119,91 @@ def raw_sql_checker():
 
             time.sleep(0.2)
             logger.info("send message about doc to user: %s", user.id)
+            CheckerApp.send_tg_message(
+                message=message,
+                api_token=Config.BOT_TOKEN,
+                chat_id=user.id,
+                parse_mode=TGParseMode.MARKDOWN,
+            )
+            DB.set_user_ping_status(user_id=user.id, ping_status=False)
+
+
+def raw_sql_specialty_checker():
+    """Ищет подходящий талон у любого врача выбранной специальности."""
+    active_specialties = DB.get_active_specialties_joined_users()
+    logger.info("got %s specialty-wide watches", len(active_specialties))
+
+    for specialty_with_users in active_specialties.values():
+        try:
+            doctors = Gorzdrav.get_doctors(
+                lpuId=specialty_with_users.lpuId,
+                specialtyId=specialty_with_users.specialtyId,
+            )
+        except Exception as e:
+            logger.info("Gorzdrav specialty exception: %s", str(e))
+            logger.debug("Exception traceback: %s", traceback.format_exc())
+            continue
+
+        if not doctors:
+            continue
+
+        appointments_by_doctor: list[tuple[object, list[ApiAppointment]]] = []
+        for doctor in doctors:
+            try:
+                appointments = Gorzdrav.get_appointments(
+                    lpuId=specialty_with_users.lpuId,
+                    doctorId=doctor.id,
+                )
+            except Exception as e:
+                logger.info(
+                    "Gorzdrav appointments exception for doctor %s: %s",
+                    doctor.id,
+                    str(e),
+                )
+                logger.debug("Exception traceback: %s", traceback.format_exc())
+                continue
+
+            if appointments:
+                appointments_by_doctor.append((doctor, appointments))
+
+        if not appointments_by_doctor:
+            continue
+
+        for user in specialty_with_users.pinging_users:
+            matches: list[tuple[str, ApiAppointment, str]] = []
+
+            for doctor, appointments in appointments_by_doctor:
+                user_appointments = CheckerApp.filter_appointments_for_user(
+                    appointments=appointments,
+                    user=user,
+                )
+                if not user_appointments:
+                    continue
+
+                doctor_link = Gorzdrav.generate_link(
+                    districtId=specialty_with_users.districtId,
+                    lpuId=specialty_with_users.lpuId,
+                    specialtyId=specialty_with_users.specialtyId,
+                    scheduleId=doctor.id,
+                )
+                matches.extend(
+                    (doctor.name, appointment, doctor_link)
+                    for appointment in user_appointments
+                )
+
+            if not matches:
+                logger.debug(
+                    "no specialty appointments matching filters for user %s",
+                    user.id,
+                )
+                continue
+
+            message = TgMessageComposer.get_any_doctor_ready_message_md(matches)
+            time.sleep(0.2)
+            logger.info(
+                "send specialty-wide appointment message to user: %s",
+                user.id,
+            )
             CheckerApp.send_tg_message(
                 message=message,
                 api_token=Config.BOT_TOKEN,
