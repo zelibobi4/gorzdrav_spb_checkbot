@@ -3,6 +3,7 @@ import hashlib
 import sqlite3
 
 from models.pydantic_models import DbDoctor, DbDoctorWithUsers
+from models.pydantic_models import DbSpecialtyWithUsers
 from models.pydantic_models import DbDoctorToCreate
 from models.pydantic_models import DbUser
 
@@ -60,6 +61,10 @@ class SqliteDb:
             limit_days INTEGER,
             time_from_minutes INTEGER,
             time_to_minutes INTEGER,
+            watch_mode TEXT DEFAULT 'doctor' NOT NULL,
+            target_district_id TEXT,
+            target_lpu_id INTEGER,
+            target_specialty_id TEXT,
             FOREIGN KEY (doctor_id) REFERENCES doctors (id)
         );"""
         self.cursor.execute(q)
@@ -78,6 +83,25 @@ class SqliteDb:
             self.cursor.execute(
                 "ALTER TABLE users ADD COLUMN time_to_minutes INTEGER;"
             )
+        if "watch_mode" not in columns:
+            self.cursor.execute(
+                "ALTER TABLE users ADD COLUMN watch_mode TEXT DEFAULT 'doctor';"
+            )
+        if "target_district_id" not in columns:
+            self.cursor.execute(
+                "ALTER TABLE users ADD COLUMN target_district_id TEXT;"
+            )
+        if "target_lpu_id" not in columns:
+            self.cursor.execute(
+                "ALTER TABLE users ADD COLUMN target_lpu_id INTEGER;"
+            )
+        if "target_specialty_id" not in columns:
+            self.cursor.execute(
+                "ALTER TABLE users ADD COLUMN target_specialty_id TEXT;"
+            )
+        self.cursor.execute(
+            "UPDATE users SET watch_mode = 'doctor' WHERE watch_mode IS NULL;"
+        )
         self.connection.commit()
 
     def create_table_doctors(self) -> None:
@@ -109,8 +133,12 @@ class SqliteDb:
         """
         q = """
         INSERT OR IGNORE INTO USERS
-        (id, ping_status, doctor_id, last_seen, limit_days, time_from_minutes, time_to_minutes)
-        values (?, ?, ?, ?, ?, ?, ?)
+        (
+            id, ping_status, doctor_id, last_seen, limit_days,
+            time_from_minutes, time_to_minutes, watch_mode,
+            target_district_id, target_lpu_id, target_specialty_id
+        )
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         if user.last_seen is None:
             user.last_seen = datetime.datetime.now(datetime.UTC)
@@ -126,6 +154,10 @@ class SqliteDb:
                 user.limit_days,
                 user.time_from_minutes,
                 user.time_to_minutes,
+                user.watch_mode,
+                user.target_district_id,
+                user.target_lpu_id,
+                user.target_specialty_id,
             ),
         )
         self.connection.commit()
@@ -141,7 +173,11 @@ class SqliteDb:
             last_seen,
             limit_days,
             time_from_minutes,
-            time_to_minutes
+            time_to_minutes,
+            watch_mode,
+            target_district_id,
+            target_lpu_id,
+            target_specialty_id
         FROM users WHERE id = ?"""
         result = self.cursor.execute(q, (user_id,)).fetchone()
         if result is None:
@@ -154,6 +190,10 @@ class SqliteDb:
             limit_days,
             time_from_minutes,
             time_to_minutes,
+            watch_mode,
+            target_district_id,
+            target_lpu_id,
+            target_specialty_id,
         ) = result
         timestamp = datetime.datetime.fromisoformat(last_seen)
         return DbUser(
@@ -164,6 +204,10 @@ class SqliteDb:
             limit_days=limit_days,
             time_from_minutes=time_from_minutes,
             time_to_minutes=time_to_minutes,
+            watch_mode=watch_mode or "doctor",
+            target_district_id=target_district_id,
+            target_lpu_id=target_lpu_id,
+            target_specialty_id=target_specialty_id,
         )
 
     def add_doctor(self, doctor: DbDoctorToCreate) -> str:
@@ -261,6 +305,29 @@ class SqliteDb:
         self.cursor.execute(q, (ping_status, user_id))
         self.connection.commit()
 
+    def set_user_specialty_watch(
+        self,
+        user_id: int,
+        district_id: str,
+        lpu_id: int,
+        specialty_id: str,
+    ) -> None:
+        """Переключает пользователя на отслеживание любого врача специальности."""
+        q = """
+        UPDATE users
+        SET doctor_id = NULL,
+            watch_mode = 'specialty',
+            target_district_id = ?,
+            target_lpu_id = ?,
+            target_specialty_id = ?
+        WHERE id = ?;
+        """
+        self.cursor.execute(
+            q,
+            (district_id, lpu_id, specialty_id, user_id),
+        )
+        self.connection.commit()
+
     def add_user_doctor(self, user_id: int, doctor_id: str) -> None:
         """
         Добавляет доктора к пользователю
@@ -270,7 +337,15 @@ class SqliteDb:
         Returns:
             None: None
         """
-        q = """UPDATE users set doctor_id = ? where id = ?;"""
+        q = """
+        UPDATE users
+        SET doctor_id = ?,
+            watch_mode = 'doctor',
+            target_district_id = NULL,
+            target_lpu_id = NULL,
+            target_specialty_id = NULL
+        WHERE id = ?;
+        """
         self.cursor.execute(q, (doctor_id, user_id))
         self.connection.commit()
 
@@ -354,7 +429,9 @@ class SqliteDb:
             doctors.doctorId
         FROM doctors
         WHERE doctors.id IN (
-            SELECT users.doctor_id FROM users WHERE ping_status == 1
+            SELECT users.doctor_id
+            FROM users
+            WHERE ping_status == 1 AND watch_mode == 'doctor'
         );
         """
         self.cursor.execute(q)
@@ -387,9 +464,13 @@ class SqliteDb:
                 users.last_seen,
                 users.limit_days,
                 users.time_from_minutes,
-                users.time_to_minutes
+                users.time_to_minutes,
+                users.watch_mode,
+                users.target_district_id,
+                users.target_lpu_id,
+                users.target_specialty_id
             FROM users
-            WHERE users.doctor_id == ?;
+            WHERE users.doctor_id == ? AND users.watch_mode == 'doctor';
         """
         self.cursor.execute(q, (doctor_id,))
         results = self.cursor.fetchall()
@@ -402,6 +483,10 @@ class SqliteDb:
                 limit_days=d[4],
                 time_from_minutes=d[5],
                 time_to_minutes=d[6],
+                watch_mode=d[7] or "doctor",
+                target_district_id=d[8],
+                target_lpu_id=d[9],
+                target_specialty_id=d[10],
             )
             for d in results
         ]
@@ -472,10 +557,14 @@ class SqliteDb:
             users.last_seen,
             users.limit_days,
             users.time_from_minutes,
-            users.time_to_minutes
+            users.time_to_minutes,
+            users.watch_mode,
+            users.target_district_id,
+            users.target_lpu_id,
+            users.target_specialty_id
         FROM doctors
         JOIN users ON doctors.id = users.doctor_id
-        WHERE ping_status == 1;
+        WHERE ping_status == 1 AND users.watch_mode == 'doctor';
         """
         self.cursor.execute(q)
         results = self.cursor.fetchall()
@@ -496,6 +585,10 @@ class SqliteDb:
                     limit_days=d[9],
                     time_from_minutes=d[10],
                     time_to_minutes=d[11],
+                    watch_mode=d[12] or "doctor",
+                    target_district_id=d[13],
+                    target_lpu_id=d[14],
+                    target_specialty_id=d[15],
                 ),
             )
             for d in results
@@ -514,6 +607,59 @@ class SqliteDb:
             else:
                 d[doctor.id].pinging_users.append(user)
         return d
+
+    def get_active_specialties_joined_users(
+        self,
+    ) -> dict[str, DbSpecialtyWithUsers]:
+        """Группирует активных пользователей по отслеживаемой специальности."""
+        q = """
+        SELECT
+            id,
+            ping_status,
+            doctor_id,
+            last_seen,
+            limit_days,
+            time_from_minutes,
+            time_to_minutes,
+            watch_mode,
+            target_district_id,
+            target_lpu_id,
+            target_specialty_id
+        FROM users
+        WHERE
+            ping_status == 1
+            AND watch_mode == 'specialty'
+            AND target_district_id IS NOT NULL
+            AND target_lpu_id IS NOT NULL
+            AND target_specialty_id IS NOT NULL;
+        """
+        rows = self.cursor.execute(q).fetchall()
+        grouped: dict[str, DbSpecialtyWithUsers] = {}
+        for row in rows:
+            user = DbUser(
+                id=row[0],
+                ping_status=row[1],
+                doctor_id=row[2],
+                last_seen=row[3],
+                limit_days=row[4],
+                time_from_minutes=row[5],
+                time_to_minutes=row[6],
+                watch_mode=row[7] or "specialty",
+                target_district_id=row[8],
+                target_lpu_id=row[9],
+                target_specialty_id=row[10],
+            )
+            key = f"{row[8]}:{row[9]}:{row[10]}"
+            if key not in grouped:
+                grouped[key] = DbSpecialtyWithUsers(
+                    districtId=row[8],
+                    lpuId=row[9],
+                    specialtyId=row[10],
+                    pinging_users=[user],
+                )
+            else:
+                grouped[key].pinging_users.append(user)
+        return grouped
 
     def inactivate_ping_for_old_users(self, inactive_months: int):
         """Отключает проверку у пользователей, которых не было видно больше указанного количества месяцев"""
