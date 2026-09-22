@@ -52,7 +52,7 @@ class CheckerApp:
         api_token: str,
         chat_id: int | str,
         parse_mode: TGParseMode | None = None,
-    ) -> None:
+    ) -> bool:
         """
         Отправка сообщений в телеграм пользователю через requests.post
         :param message: str - сообщение
@@ -77,6 +77,8 @@ class CheckerApp:
                 chat_id,
                 response.text,
             )
+            return False
+        return True
 
     @staticmethod
     def filter_appointments_for_user(
