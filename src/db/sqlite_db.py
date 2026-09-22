@@ -43,6 +43,7 @@ class SqliteDb:
         self.create_table_doctors()
         self.create_table_users()
         self.migrate_users_table()
+        self.create_table_seen_appointments()
 
     def create_table_users(self):
         """
@@ -66,6 +67,17 @@ class SqliteDb:
             target_lpu_id INTEGER,
             target_specialty_id TEXT,
             FOREIGN KEY (doctor_id) REFERENCES doctors (id)
+        );"""
+        self.cursor.execute(q)
+        self.connection.commit()
+
+    def create_table_seen_appointments(self) -> None:
+        """Хранит набор талонов, уже показанных пользователю в прошлом цикле."""
+        q = """CREATE TABLE IF NOT EXISTS user_seen_appointments (
+            user_id INTEGER NOT NULL,
+            appointment_key TEXT NOT NULL,
+            PRIMARY KEY (user_id, appointment_key),
+            FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
         );"""
         self.cursor.execute(q)
         self.connection.commit()
@@ -288,15 +300,49 @@ class SqliteDb:
         result = self.cursor.fetchone()[0]
         return bool(result)
 
+    def get_seen_appointment_keys(self, user_id: int) -> set[str]:
+        """Возвращает набор талонов, которые были видны в предыдущем полном цикле."""
+        rows = self.cursor.execute(
+            "SELECT appointment_key FROM user_seen_appointments WHERE user_id = ?;",
+            (user_id,),
+        ).fetchall()
+        return {row[0] for row in rows}
+
+    def set_seen_appointment_keys(
+        self,
+        user_id: int,
+        appointment_keys: set[str],
+    ) -> None:
+        """Заменяет сохранённый снимок подходящих талонов пользователя."""
+        self.cursor.execute(
+            "DELETE FROM user_seen_appointments WHERE user_id = ?;",
+            (user_id,),
+        )
+        if appointment_keys:
+            self.cursor.executemany(
+                """
+                INSERT INTO user_seen_appointments (user_id, appointment_key)
+                VALUES (?, ?);
+                """,
+                [(user_id, key) for key in sorted(appointment_keys)],
+            )
+        self.connection.commit()
+
+    def clear_seen_appointments(self, user_id: int) -> None:
+        """Сбрасывает антиспам-снимок пользователя."""
+        self.set_seen_appointment_keys(user_id=user_id, appointment_keys=set())
+
     def set_user_ping_status(self, user_id: int, ping_status: bool) -> None:
         """
-        Устанавливает значение ping_status для пользователя с user_id
-        Args:
-            user_id: int - id пользователя
-            ping_status: bool - флаг активности проверки доктора
-        Returns:
-            None: None
+        Устанавливает значение ping_status для пользователя с user_id.
+        При новом включении мониторинга старый антиспам-снимок сбрасывается.
         """
+        row = self.cursor.execute(
+            "SELECT ping_status FROM users WHERE id = ?;",
+            (user_id,),
+        ).fetchone()
+        was_active = bool(row[0]) if row is not None else False
+
         q = """
         UPDATE users
             set ping_status = ?
@@ -304,6 +350,9 @@ class SqliteDb:
         """
         self.cursor.execute(q, (ping_status, user_id))
         self.connection.commit()
+
+        if ping_status and not was_active:
+            self.clear_seen_appointments(user_id)
 
     def set_user_specialty_watch(
         self,
@@ -327,6 +376,7 @@ class SqliteDb:
             (district_id, lpu_id, specialty_id, user_id),
         )
         self.connection.commit()
+        self.clear_seen_appointments(user_id)
 
     def add_user_doctor(self, user_id: int, doctor_id: str) -> None:
         """
@@ -348,6 +398,7 @@ class SqliteDb:
         """
         self.cursor.execute(q, (doctor_id, user_id))
         self.connection.commit()
+        self.clear_seen_appointments(user_id)
 
     def get_user_doctor(self, user_id: int) -> DbDoctor | None:
         """
@@ -391,6 +442,10 @@ class SqliteDb:
         Returns:
             None: None
         """
+        self.cursor.execute(
+            "DELETE FROM user_seen_appointments WHERE user_id = ?;",
+            (user_id,),
+        )
         q = """DELETE FROM users WHERE id = ?"""
         self.cursor.execute(q, (user_id,))
         self.connection.commit()
@@ -515,6 +570,7 @@ class SqliteDb:
         """
         self.cursor.execute(q, (time_from_minutes, time_to_minutes, user_id))
         self.connection.commit()
+        self.clear_seen_appointments(user_id)
 
     def reset_time_filter(self, user_id: int) -> None:
         """Сбрасывает фильтр времени приёма."""
@@ -525,16 +581,15 @@ class SqliteDb:
         )
 
     def set_limit_days(self, user_id: int, limit_days: int | None):
-        """Устанавливает кол-во дней для поиска"""
+        """Устанавливает кол-во дней для поиска."""
         q = """UPDATE users SET limit_days = ? WHERE id = ?;"""
         self.cursor.execute(q, (limit_days, user_id))
         self.connection.commit()
+        self.clear_seen_appointments(user_id)
 
     def reset_limit_days(self, user_id: int):
-        """Сбрасывает счётчик дней"""
-        q = """UPDATE users SET limit_days = NULL WHERE id = ?;"""
-        self.cursor.execute(q, (user_id,))
-        self.connection.commit()
+        """Сбрасывает счётчик дней."""
+        self.set_limit_days(user_id=user_id, limit_days=None)
 
     def get_active_doctors_joined_users(self) -> dict[str, DbDoctorWithUsers]:
         """
