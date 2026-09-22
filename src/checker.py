@@ -67,38 +67,51 @@ def raw_sql_checker():
             scheduleId=doc_with_users.doctorId,
         )
 
-        # проверяем надо ли получать назначения отдельно у доктора (если есть пользователи с лимитером)
+        # Реальные appointments нужны, если хотя бы один пользователь фильтрует
+        # результат по дате или времени.
         doctor_users = doc_with_users.pinging_users
-        is_any_user_have_day_limit = [
-            user for user in doctor_users if user.limit_days
-        ].__len__() > 0
+        need_appointments = any(
+            user.limit_days
+            or user.time_from_minutes is not None
+            or user.time_to_minutes is not None
+            for user in doctor_users
+        )
         appointments: list[ApiAppointment] = []
-        if is_any_user_have_day_limit:
-            # получаем назначения у доктора
+        if need_appointments:
             appointments = Gorzdrav.get_appointments(
                 lpuId=doc_with_users.lpuId,
                 doctorId=doc_with_users.doctorId,
             )
             logger.debug("doctor appointments: %s", appointments)
 
-        message: str = TgMessageComposer.get_doc_ready_message_md(
-            doctor_name=api_doctor.name,
-            free_participant_count=api_doctor.freeParticipantCount,
-            free_ticket_count=api_doctor.freeTicketCount,
-            doctor_link=link,
-            appointments=appointments,
-        )
-
         for user in doc_with_users.pinging_users:
             logger.debug("user: %s", user.model_dump_json(indent=2))
 
-            is_in_limit: bool = CheckerApp.check_appointments_in_user_limit_days(
-                appointments=appointments,
-                user=user,
+            user_has_filters = (
+                bool(user.limit_days)
+                or user.time_from_minutes is not None
+                or user.time_to_minutes is not None
             )
-            if user.limit_days and (not is_in_limit):
-                logger.debug("doc not in user limit days %s", user.limit_days)
-                continue
+            user_appointments = appointments
+            if user_has_filters:
+                user_appointments = CheckerApp.filter_appointments_for_user(
+                    appointments=appointments,
+                    user=user,
+                )
+                if not user_appointments:
+                    logger.debug(
+                        "no appointments matching filters for user %s",
+                        user.id,
+                    )
+                    continue
+
+            message: str = TgMessageComposer.get_doc_ready_message_md(
+                doctor_name=api_doctor.name,
+                free_participant_count=api_doctor.freeParticipantCount,
+                free_ticket_count=api_doctor.freeTicketCount,
+                doctor_link=link,
+                appointments=user_appointments,
+            )
 
             time.sleep(0.2)
             logger.info("send message about doc to user: %s", user.id)
