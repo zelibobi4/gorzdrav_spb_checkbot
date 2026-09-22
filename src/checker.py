@@ -7,7 +7,7 @@ from core.checker_app import CheckerApp
 from depends import sqlite_db as DB
 from gorzdrav.api import Gorzdrav
 from gorzdrav.exceptions import GorzdravExceptionBase
-from gorzdrav.models import ApiAppointment, Doctor
+from gorzdrav.models import ApiAppointment, ApiDoctor, Doctor
 from queries.orm import SyncOrm
 from telegram.message_composer import TgMessageComposer
 from telegram.types import TGParseMode
@@ -147,7 +147,7 @@ def raw_sql_specialty_checker():
         if not doctors:
             continue
 
-        appointments_by_doctor: list[tuple[object, list[ApiAppointment]]] = []
+        appointments_by_doctor: list[tuple[ApiDoctor, list[ApiAppointment]]] = []
         for doctor in doctors:
             try:
                 appointments = Gorzdrav.get_appointments(
