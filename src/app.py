@@ -1,5 +1,6 @@
 import logging
 import multiprocessing
+import re
 from functools import wraps
 from typing import Any, Callable
 
@@ -138,8 +139,8 @@ def is_user_profile(func: Callable):
 
 def is_user_have_doctor(func: Callable):
     """
-    Декоратор для проверки наличия врача у пользователя.
-    Если врача нет, то отправляет сообщение об ошибке и возвращает None.
+    Проверяет, что пользователь выбрал цель отслеживания:
+    конкретного врача или любого врача выбранной специальности.
     """
 
     @wraps(func)
@@ -151,13 +152,22 @@ def is_user_have_doctor(func: Callable):
         if not message.from_user:
             return None
         user_id = message.from_user.id
-        # doctor = SyncOrm.get_user_doctor(user_id=user_id)
+
+        user = DB.get_user(user_id=user_id)
+        if (
+            user is not None
+            and user.watch_mode == "specialty"
+            and user.target_lpu_id is not None
+            and user.target_specialty_id is not None
+        ):
+            return func(message, *args, **kwargs)
 
         doctor = DB.get_user_doctor(user_id=user_id)
         if not doctor:
             bot.reply_to(
                 message=message,  # type: ignore
-                text="Пожалуйста добавьте врача.\n" + "Выполните команду /set_doctor",
+                text="Пожалуйста выберите врача или специальность.\n"
+                + "Выполните команду /set_doctor",
             )
             return None
         return func(message, *args, **kwargs)
@@ -243,6 +253,99 @@ def get_set_limit_command(message: Message):
         )
 
 
+def _parse_time_value(value: str) -> int:
+    """Преобразует HH:MM в минуты от начала суток."""
+    hour_str, minute_str = value.split(":", maxsplit=1)
+    hour = int(hour_str)
+    minute = int(minute_str)
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise ValueError("Некорректное время")
+    return hour * 60 + minute
+
+
+def _format_time_minutes(value: int | None) -> str:
+    if value is None:
+        return ""
+    return f"{value // 60:02d}:{value % 60:02d}"
+
+
+@bot.message_handler(commands=["evening"])  # type: ignore
+@is_user_profile
+def set_evening_filter(message: Message):
+    """Искать только вечерние талоны, начиная с 17:00."""
+    if message.from_user is None:
+        return
+    DB.set_time_filter(
+        user_id=message.from_user.id,
+        time_from_minutes=17 * 60,
+        time_to_minutes=23 * 60 + 59,
+    )
+    bot.reply_to(
+        message,
+        "Установлен вечерний фильтр: искать талоны с 17:00 до конца дня.",
+    )
+
+
+@bot.message_handler(commands=["time_off"])  # type: ignore
+@is_user_profile
+def reset_time_filter(message: Message):
+    """Сбрасывает ограничение по времени приёма."""
+    if message.from_user is None:
+        return
+    DB.reset_time_filter(user_id=message.from_user.id)
+    bot.reply_to(message, "Фильтр времени сброшен. Подходит любое время.")
+
+
+@bot.message_handler(
+    regexp=r"^/time(?:@\w+)?\s+\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}\s*$"
+)
+@is_user_profile
+def set_custom_time_filter(message: Message):
+    """Устанавливает произвольный диапазон времени, например /time 17:00-21:00."""
+    if message.from_user is None or not message.text:
+        return
+
+    match = re.search(
+        r"(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})",
+        message.text,
+    )
+    if match is None:
+        return
+
+    try:
+        time_from = _parse_time_value(match.group(1))
+        time_to = _parse_time_value(match.group(2))
+        if time_from > time_to:
+            raise ValueError("Начало диапазона позже конца")
+    except ValueError:
+        bot.reply_to(
+            message,
+            "Некорректный диапазон. Пример: /time 17:00-21:00",
+        )
+        return
+
+    DB.set_time_filter(
+        user_id=message.from_user.id,
+        time_from_minutes=time_from,
+        time_to_minutes=time_to,
+    )
+    bot.reply_to(
+        message,
+        "Установлен фильтр времени: "
+        + f"{_format_time_minutes(time_from)}–{_format_time_minutes(time_to)}.",
+    )
+
+
+@bot.message_handler(commands=["time"])  # type: ignore
+@is_user_profile
+def time_filter_help(message: Message):
+    bot.reply_to(
+        message,
+        "Укажите диапазон так: /time 17:00-21:00\n"
+        + "Для всего вечера используйте /evening, для сброса — /time_off.",
+    )
+
+
 @bot.message_handler(commands=["start"])  # type: ignore
 def start_message(message: Message):
     if message.from_user is None:
@@ -283,9 +386,12 @@ def get_help(message: Message):
         + "/7 - установить просмотр мест в течении недели\n"
         + "/n - установить просмотр мест в течении n-дней\n"
         + "/0 - искать свободные места в любое время\n"
+        + "/evening - искать только вечерние талоны после 17:00\n"
+        + "/time 17:00-21:00 - задать свой диапазон времени\n"
+        + "/time_off - сбросить фильтр времени\n"
         + "/delete - удалить профиль пользователя\n"
         + "/state - узнать текущее состояние бота\n\n"
-        + "/set_doctor - выбрать врача и медицинское учреждение"
+        + "/set_doctor - выбрать врача или режим «любой врач специальности»"
     )
     bot.reply_to(message, text)  # type: ignore
 
@@ -562,7 +668,12 @@ def set_specialty(call: CallbackQuery):
     lpu = state_payload["lpu"]
     doctors = Gorzdrav.get_doctors(lpuId=lpu.id, specialtyId=specialty_id)
 
-    buttons = keyboard_service.get_doctor_buttons(doctors)
+    buttons = [
+        ButtonSchema(
+            text="👥 Любой врач этой специальности",
+            callback_data="doctor/any",
+        )
+    ] + keyboard_service.get_doctor_buttons(doctors)
 
     keyboard_service.save_buttons(
         user_id=call.from_user.id,
@@ -628,6 +739,31 @@ def set_doctor(call: CallbackQuery):
     district_id: str = state_payload["district_id"]
     lpu: api_models.ApiLPU = state_payload["lpu"]
     specialty_id = state_payload["specialty_id"]
+
+    if doctor_id == "any":
+        DB.set_user_specialty_watch(
+            user_id=user_id,
+            district_id=district_id,
+            lpu_id=lpu.id,
+            specialty_id=specialty_id,
+        )
+        SM.set_state(user_id=user_id, state_name=STATES_NAMES.HAVE_PROFILE)
+
+        user = DB.get_user(user_id=user_id)
+        ping_text = (
+            "включено" if user is not None and user.ping_status else "отключено"
+        )
+        bot.send_message(
+            chat_id=call.message.chat.id,
+            text=(
+                "Выбран режим: любой врач выбранной специальности.\n"
+                + f"Медучреждение: {lpu.lpuFullName or lpu.address or lpu.id}.\n"
+                + f"Отслеживание сейчас {ping_text}.\n\n"
+                + "Можно задать /evening или /time 17:00-21:00, "
+                + "а затем включить /on."
+            ),
+        )
+        return
 
     doctor: checker.Doctor | None = Gorzdrav.get_doctor(
         lpuId=lpu.id,
@@ -703,7 +839,16 @@ def ping_on(message: Message):
     user: DbUser | None = DB.get_user(user_id=user_id)
     if user is None:
         return
-    text = f"Отслеживание {f'в пределах {user.limit_days} дней ' if user.limit_days else ''}включено"
+    time_filter_text = ""
+    if user.time_from_minutes is not None or user.time_to_minutes is not None:
+        time_from = _format_time_minutes(user.time_from_minutes) or "00:00"
+        time_to = _format_time_minutes(user.time_to_minutes) or "23:59"
+        time_filter_text = f" с {time_from} до {time_to}"
+    text = (
+        f"Отслеживание "
+        + f"{f'в пределах {user.limit_days} дней ' if user.limit_days else ''}"
+        + f"включено{time_filter_text}"
+    )
     bot.reply_to(message=message, text=text)  # type: ignore
 
 
@@ -745,30 +890,77 @@ def delete_user(message: Message):
 @is_user_have_doctor
 @handle_gorzdrav_exceptions
 def get_status(message: Message):
-    """
-    Пишет пользователю информацию о его враче.
-    """
+    """Показывает выбранную цель и параметры отслеживания."""
     if message.from_user is None:
         return
+
     user_id: int = message.from_user.id
     user: DbUser | None = DB.get_user(user_id=user_id)
     if user is None:
         return
+
+    ping_text = f"Отслеживание {'включено' if user.ping_status else 'отключено'}."
+    limit_days_text = (
+        f"Лимит дней: "
+        + f"{user.limit_days if user.limit_days is not None else 'не установлен'}."
+    )
+    if user.time_from_minutes is None and user.time_to_minutes is None:
+        time_filter_text = "Время приёма: любое."
+    else:
+        time_from = _format_time_minutes(user.time_from_minutes) or "00:00"
+        time_to = _format_time_minutes(user.time_to_minutes) or "23:59"
+        time_filter_text = f"Время приёма: {time_from}–{time_to}."
+
+    if (
+        user.watch_mode == "specialty"
+        and user.target_lpu_id is not None
+        and user.target_specialty_id is not None
+    ):
+        lpu = Gorzdrav.get_lpu(lpuId=user.target_lpu_id)
+        specialties = Gorzdrav.get_specialties(lpuId=user.target_lpu_id)
+        specialty = next(
+            (
+                item
+                for item in specialties
+                if item.id == user.target_specialty_id
+            ),
+            None,
+        )
+        specialty_name = (
+            specialty.name
+            if specialty is not None and specialty.name
+            else f"ID {user.target_specialty_id}"
+        )
+        text = (
+            f"Режим: любой врач специальности «{specialty_name}».\n"
+            + f"Медучреждение: {lpu.lpuFullName or lpu.address or lpu.id}.\n"
+            + f"{ping_text}\n"
+            + f"{limit_days_text}\n"
+            + time_filter_text
+        )
+        bot.reply_to(
+            message=message,
+            text=text,
+            disable_web_page_preview=True,
+        )
+        return
+
     user_doctor = DB.get_user_doctor(user_id=user_id)
     if user_doctor is None:
         return
+
     gorzdrav_doctor: api_models.ApiDoctor | None = Gorzdrav.get_doctor(
         lpuId=user_doctor.lpuId,
         specialtyId=user_doctor.specialtyId,
         doctorId=user_doctor.doctorId,
     )
     if gorzdrav_doctor is None:
-        bot.reply_to(  # type: ignore
+        bot.reply_to(
             message=message,
             text="Не удалось получить данные врача.\n"
             + "Попробуйте позднее или задайте снова врача командой /set_doctor.",
         )
-        return None
+        return
 
     link: str = Gorzdrav.generate_link(
         districtId=user_doctor.districtId,
@@ -776,13 +968,13 @@ def get_status(message: Message):
         specialtyId=gorzdrav_doctor.specialtyId,
         scheduleId=gorzdrav_doctor.doctorId,
     )
-
-    ping_text = f"Отслеживание {'включено' if user.ping_status else 'отключено'}."
-    limit_days_text: str = f"Лимит дней: {
-        user.limit_days if user.limit_days is not None else 'не установлен'
-    }."
-    text: str = f"{gorzdrav_doctor}\n{ping_text}\n{limit_days_text}"
-    text += f"\n\nСсылка на запись: [ссылка]({link})"
+    text = (
+        f"{gorzdrav_doctor}\n"
+        + f"{ping_text}\n"
+        + f"{limit_days_text}\n"
+        + time_filter_text
+        + f"\n\nСсылка на запись: [ссылка]({link})"
+    )
     bot.reply_to(
         message=message,
         text=text,

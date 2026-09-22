@@ -6,3 +6,4 @@ pydantic
 sqlalchemy
 pytest
 python-dotenv
+faker

@@ -18,6 +18,12 @@ users_table = sa.Table(
         default=sa.func.now,
         onupdate=sa.func.now,
     ),
+    sa.Column("time_from_minutes", sa.Integer),
+    sa.Column("time_to_minutes", sa.Integer),
+    sa.Column("watch_mode", sa.String, default="doctor"),
+    sa.Column("target_district_id", sa.String),
+    sa.Column("target_lpu_id", sa.Integer),
+    sa.Column("target_specialty_id", sa.String),
 )
 
 
@@ -45,6 +51,12 @@ class UserOrm(Base):
     )
     doctor: Mapped["DoctorOrm"] = relationship(back_populates="users")
     limit_days: Mapped[int | None] = mapped_column(default=None)
+    time_from_minutes: Mapped[int | None] = mapped_column(default=None)
+    time_to_minutes: Mapped[int | None] = mapped_column(default=None)
+    watch_mode: Mapped[str] = mapped_column(default="doctor")
+    target_district_id: Mapped[str | None] = mapped_column(default=None)
+    target_lpu_id: Mapped[int | None] = mapped_column(default=None)
+    target_specialty_id: Mapped[str | None] = mapped_column(default=None)
 
     @property
     def ping_status_str(self) -> str:
