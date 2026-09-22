@@ -95,7 +95,7 @@ class CheckerApp:
         for appointment in appointments:
             visit_start = appointment.visitStart
 
-            if user.limit_days:
+            if user.limit_days is not None and user.limit_days > 0:
                 delta_days = (visit_start.date() - current_date).days + 1
                 if delta_days < 1 or delta_days > user.limit_days:
                     continue
