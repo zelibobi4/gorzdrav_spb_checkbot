@@ -20,6 +20,8 @@ class DbUser(BaseModel):
     doctor_id: Optional[str] = None
     last_seen: Optional[datetime] = None
     limit_days: Optional[int] = None
+    time_from_minutes: Optional[int] = None
+    time_to_minutes: Optional[int] = None
 
 
 class DbDoctorWithUsers(DbDoctor):
