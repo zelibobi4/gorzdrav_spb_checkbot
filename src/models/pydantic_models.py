@@ -30,3 +30,13 @@ class DbUser(BaseModel):
 
 class DbDoctorWithUsers(DbDoctor):
     pinging_users: list[DbUser]
+
+
+class DbSpecialtyTarget(BaseModel):
+    districtId: str
+    lpuId: int
+    specialtyId: str
+
+
+class DbSpecialtyWithUsers(DbSpecialtyTarget):
+    pinging_users: list[DbUser]
