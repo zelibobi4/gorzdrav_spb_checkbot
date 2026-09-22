@@ -890,30 +890,77 @@ def delete_user(message: Message):
 @is_user_have_doctor
 @handle_gorzdrav_exceptions
 def get_status(message: Message):
-    """
-    Пишет пользователю информацию о его враче.
-    """
+    """Показывает выбранную цель и параметры отслеживания."""
     if message.from_user is None:
         return
+
     user_id: int = message.from_user.id
     user: DbUser | None = DB.get_user(user_id=user_id)
     if user is None:
         return
+
+    ping_text = f"Отслеживание {'включено' if user.ping_status else 'отключено'}."
+    limit_days_text = (
+        f"Лимит дней: "
+        + f"{user.limit_days if user.limit_days is not None else 'не установлен'}."
+    )
+    if user.time_from_minutes is None and user.time_to_minutes is None:
+        time_filter_text = "Время приёма: любое."
+    else:
+        time_from = _format_time_minutes(user.time_from_minutes) or "00:00"
+        time_to = _format_time_minutes(user.time_to_minutes) or "23:59"
+        time_filter_text = f"Время приёма: {time_from}–{time_to}."
+
+    if (
+        user.watch_mode == "specialty"
+        and user.target_lpu_id is not None
+        and user.target_specialty_id is not None
+    ):
+        lpu = Gorzdrav.get_lpu(lpuId=user.target_lpu_id)
+        specialties = Gorzdrav.get_specialties(lpuId=user.target_lpu_id)
+        specialty = next(
+            (
+                item
+                for item in specialties
+                if item.id == user.target_specialty_id
+            ),
+            None,
+        )
+        specialty_name = (
+            specialty.name
+            if specialty is not None and specialty.name
+            else f"ID {user.target_specialty_id}"
+        )
+        text = (
+            f"Режим: любой врач специальности «{specialty_name}».\n"
+            + f"Медучреждение: {lpu.lpuFullName or lpu.address or lpu.id}.\n"
+            + f"{ping_text}\n"
+            + f"{limit_days_text}\n"
+            + time_filter_text
+        )
+        bot.reply_to(
+            message=message,
+            text=text,
+            disable_web_page_preview=True,
+        )
+        return
+
     user_doctor = DB.get_user_doctor(user_id=user_id)
     if user_doctor is None:
         return
+
     gorzdrav_doctor: api_models.ApiDoctor | None = Gorzdrav.get_doctor(
         lpuId=user_doctor.lpuId,
         specialtyId=user_doctor.specialtyId,
         doctorId=user_doctor.doctorId,
     )
     if gorzdrav_doctor is None:
-        bot.reply_to(  # type: ignore
+        bot.reply_to(
             message=message,
             text="Не удалось получить данные врача.\n"
             + "Попробуйте позднее или задайте снова врача командой /set_doctor.",
         )
-        return None
+        return
 
     link: str = Gorzdrav.generate_link(
         districtId=user_doctor.districtId,
@@ -921,24 +968,13 @@ def get_status(message: Message):
         specialtyId=gorzdrav_doctor.specialtyId,
         scheduleId=gorzdrav_doctor.doctorId,
     )
-
-    ping_text = f"Отслеживание {'включено' if user.ping_status else 'отключено'}."
-    limit_days_text: str = f"Лимит дней: {
-        user.limit_days if user.limit_days is not None else 'не установлен'
-    }."
-    if user.time_from_minutes is None and user.time_to_minutes is None:
-        time_filter_text = "Время приёма: любое."
-    else:
-        time_from = _format_time_minutes(user.time_from_minutes) or "00:00"
-        time_to = _format_time_minutes(user.time_to_minutes) or "23:59"
-        time_filter_text = f"Время приёма: {time_from}–{time_to}."
-    text: str = (
+    text = (
         f"{gorzdrav_doctor}\n"
         + f"{ping_text}\n"
         + f"{limit_days_text}\n"
         + time_filter_text
+        + f"\n\nСсылка на запись: [ссылка]({link})"
     )
-    text += f"\n\nСсылка на запись: [ссылка]({link})"
     bot.reply_to(
         message=message,
         text=text,
