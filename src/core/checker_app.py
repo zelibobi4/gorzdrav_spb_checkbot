@@ -79,30 +79,54 @@ class CheckerApp:
             )
 
     @staticmethod
+    def filter_appointments_for_user(
+        appointments: list[ApiAppointment],
+        user: DbUser,
+    ) -> list[ApiAppointment]:
+        """Возвращает свободные талоны, подходящие пользователю по дате и времени."""
+        if not appointments:
+            return []
+
+        current_date = datetime.datetime.now(
+            datetime.timezone(offset=datetime.timedelta(hours=3))
+        ).date()
+        result: list[ApiAppointment] = []
+
+        for appointment in appointments:
+            visit_start = appointment.visitStart
+
+            if user.limit_days:
+                delta_days = (visit_start.date() - current_date).days + 1
+                if delta_days < 1 or delta_days > user.limit_days:
+                    continue
+
+            visit_minutes = visit_start.hour * 60 + visit_start.minute
+            if (
+                user.time_from_minutes is not None
+                and visit_minutes < user.time_from_minutes
+            ):
+                continue
+            if (
+                user.time_to_minutes is not None
+                and visit_minutes > user.time_to_minutes
+            ):
+                continue
+
+            result.append(appointment)
+
+        return sorted(result, key=lambda appointment: appointment.visitStart)
+
+    @staticmethod
     def check_appointments_in_user_limit_days(
         appointments: list[ApiAppointment],
         user: DbUser,
     ) -> bool:
         """Проверяет есть ли назначения врача в пределах лимита дней пользователя"""
-        if not appointments:
-            return False
-
         if not user.limit_days:
-            return True
-        """True, если есть назначение в переделах установленного лимита у пользователя"""
-        current_date = datetime.datetime.now(
-            datetime.timezone(offset=datetime.timedelta(hours=3))
-        ).date()
-        appointments_dates = [
-            appointment.visitStart.date() for appointment in appointments
-        ]
-        logger.debug("appointments dates: %s", appointments_dates)
-        appointments_deltas: list[int] = [
-            ((i - current_date).days + 1)
-            for i in appointments_dates
-            if i >= current_date
-        ]
-        logger.debug("appointments deltas: %s", appointments_deltas)
-        is_lower: list[bool] = [i <= user.limit_days for i in appointments_deltas]
-        logger.debug("is lower: %s", is_lower)
-        return any(is_lower)
+            return bool(appointments)
+        return bool(
+            CheckerApp.filter_appointments_for_user(
+                appointments=appointments,
+                user=user,
+            )
+        )
