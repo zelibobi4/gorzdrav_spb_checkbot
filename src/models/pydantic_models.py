@@ -26,6 +26,7 @@ class DbUser(BaseModel):
     target_district_id: Optional[str] = None
     target_lpu_id: Optional[int] = None
     target_specialty_id: Optional[str] = None
+    exclude_duty_doctor: bool = False
 
 
 class DbDoctorWithUsers(DbDoctor):
