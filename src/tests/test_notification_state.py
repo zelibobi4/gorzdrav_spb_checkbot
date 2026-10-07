@@ -349,3 +349,24 @@ def test_manual_check_message_marks_cached_result():
 
     assert "17 сек. назад" in message
     assert "без новых запросов к API" in message
+
+
+def test_check_cache_signature_ignores_monitoring_status():
+    user_on = DbUser(
+        id=1,
+        ping_status=True,
+        watch_mode="specialty",
+        target_district_id="10",
+        target_lpu_id=123,
+        target_specialty_id="dentist",
+        limit_days=15,
+        time_from_minutes=18 * 60,
+        time_to_minutes=23 * 60,
+        exclude_duty_doctor=True,
+    )
+    user_off = user_on.model_copy(update={"ping_status": False})
+
+    assert (
+        CheckerApp.get_check_cache_signature(user_on)
+        == CheckerApp.get_check_cache_signature(user_off)
+    )
