@@ -1,4 +1,5 @@
 import datetime
+import json
 import logging
 
 import requests
@@ -11,6 +12,71 @@ logger = logging.getLogger(__name__)
 
 
 class CheckerApp:
+    @staticmethod
+    def get_check_cache_signature(user: DbUser) -> str:
+        """Сигнатура настроек, влияющих на результат /check."""
+        payload = {
+            "watch_mode": user.watch_mode,
+            "doctor_id": user.doctor_id,
+            "target_district_id": user.target_district_id,
+            "target_lpu_id": user.target_lpu_id,
+            "target_specialty_id": user.target_specialty_id,
+            "limit_days": user.limit_days,
+            "time_from_minutes": user.time_from_minutes,
+            "time_to_minutes": user.time_to_minutes,
+            "exclude_duty_doctor": user.exclude_duty_doctor,
+        }
+        return json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @staticmethod
+    def serialize_check_snapshot(
+        matches: list[tuple[str, ApiAppointment, str]],
+        checked_doctors: int,
+        failed_doctors: int,
+        excluded_doctors: int,
+    ) -> str:
+        """Сериализует результат проверки для межпроцессного SQLite-кэша."""
+        payload = {
+            "matches": [
+                {
+                    "doctor_name": doctor_name,
+                    "appointment": appointment.model_dump(mode="json"),
+                    "doctor_link": doctor_link,
+                }
+                for doctor_name, appointment, doctor_link in matches
+            ],
+            "checked_doctors": checked_doctors,
+            "failed_doctors": failed_doctors,
+            "excluded_doctors": excluded_doctors,
+        }
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
+    def deserialize_check_snapshot(
+        payload: str,
+    ) -> tuple[list[tuple[str, ApiAppointment, str]], int, int, int]:
+        """Восстанавливает результат проверки из SQLite-кэша."""
+        data = json.loads(payload)
+        matches = [
+            (
+                item["doctor_name"],
+                ApiAppointment.model_validate(item["appointment"]),
+                item["doctor_link"],
+            )
+            for item in data.get("matches", [])
+        ]
+        return (
+            matches,
+            int(data.get("checked_doctors", 0)),
+            int(data.get("failed_doctors", 0)),
+            int(data.get("excluded_doctors", 0)),
+        )
+
     @staticmethod
     def is_duty_doctor_name(name: str) -> bool:
         """Определяет служебную запись «Дежурный врач» независимо от пояснения."""
