@@ -993,7 +993,14 @@ def check_now(message: Message):
             ) = CheckerApp.deserialize_check_snapshot(payload)
         except Exception:
             logger.exception("Broken /check cache for user %s", user.id)
-            DB.clear_check_cache(user.id)
+            try:
+                DB.clear_check_cache(user.id)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to clear broken /check cache for user %s: %s",
+                    user.id,
+                    exc,
+                )
         else:
             result_text = TgMessageComposer.get_manual_check_message_md(
                 matches=cached_matches,
