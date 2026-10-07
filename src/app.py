@@ -8,6 +8,7 @@ import telebot
 from pydantic import BaseModel
 from telebot.storage import StateMemoryStorage
 from telebot.types import (
+    BotCommand,
     CallbackQuery,
     InaccessibleMessage,
     InlineKeyboardButton,
@@ -45,6 +46,27 @@ bot = telebot.TeleBot(
     state_storage=state_storage,
     use_class_middlewares=True,
 )
+
+
+def configure_bot_commands() -> None:
+    """Публикует основные команды в меню Telegram."""
+    commands = [
+        BotCommand("status", "текущие настройки отслеживания"),
+        BotCommand("set_doctor", "выбрать врача или специальность"),
+        BotCommand("on", "включить отслеживание"),
+        BotCommand("off", "выключить отслеживание"),
+        BotCommand("evening", "искать талоны после 17:00"),
+        BotCommand("time", "задать диапазон, например /time 18:00-23:00"),
+        BotCommand("time_off", "сбросить фильтр времени"),
+        BotCommand("duty_off", "исключить Дежурного врача"),
+        BotCommand("duty_on", "снова учитывать Дежурного врача"),
+        BotCommand("help", "список команд"),
+        BotCommand("delete", "удалить профиль"),
+    ]
+    try:
+        bot.set_my_commands(commands)
+    except Exception as exc:
+        logger.warning("Failed to update Telegram command menu: %s", exc)
 
 
 class KeySchema(BaseModel):
@@ -1037,6 +1059,7 @@ def get_status(message: Message):
 
 if __name__ == "__main__":
     logger.info("Bot start")
+    configure_bot_commands()
     logger.info("Bot username: " + str(bot.get_me().username))
     logger.info("Bot id: " + str(bot.get_me().id))
     logger.info("Bot first_name: " + bot.get_me().first_name)
