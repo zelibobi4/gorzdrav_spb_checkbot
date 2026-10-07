@@ -12,6 +12,11 @@ logger = logging.getLogger(__name__)
 
 class CheckerApp:
     @staticmethod
+    def is_duty_doctor_name(name: str) -> bool:
+        """Определяет служебную запись «Дежурный врач» независимо от пояснения."""
+        return name.strip().casefold().startswith("дежурный врач")
+
+    @staticmethod
     def is_doc_nearestDate_in_user_limit_days(user: DbUser, doctor: Doctor) -> bool:
         """Проверяет, попадает ли ближайшая дата записи врача в лимит дней пользователя от текущей даты"""
         user_limit_days: int | None = user.limit_days
