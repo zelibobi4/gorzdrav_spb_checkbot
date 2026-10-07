@@ -38,11 +38,6 @@ def _appointment_key(doctor_id: str, appointment: ApiAppointment) -> str:
     return f"{doctor_id}:{appointment.visitStart.isoformat()}"
 
 
-def _is_duty_doctor_name(name: str) -> bool:
-    """Определяет служебную запись «Дежурный врач» независимо от текста в скобках."""
-    return name.strip().casefold().startswith("дежурный врач")
-
-
 def raw_sql_checker():
     """Проверяет конкретных врачей и уведомляет только о новых подходящих талонах."""
     active_docs_with_users = DB.get_active_doctors_joined_users()
@@ -181,7 +176,10 @@ def raw_sql_specialty_checker():
             successful_current_keys: set[str] = set()
 
             for doctor, appointments in appointments_by_doctor:
-                if user.exclude_duty_doctor and _is_duty_doctor_name(doctor.name):
+                if (
+                    user.exclude_duty_doctor
+                    and CheckerApp.is_duty_doctor_name(doctor.name)
+                ):
                     logger.debug(
                         "duty doctor excluded for user %s: %s",
                         user.id,
