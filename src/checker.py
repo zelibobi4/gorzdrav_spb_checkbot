@@ -47,16 +47,24 @@ def _save_check_snapshot(
     excluded_doctors: int,
 ) -> None:
     """Сохраняет свежий результат фоновой проверки для быстрого /check."""
-    DB.set_check_cache(
-        user_id=user.id,
-        signature=CheckerApp.get_check_cache_signature(user),
-        payload=CheckerApp.serialize_check_snapshot(
-            matches=matches,
-            checked_doctors=checked_doctors,
-            failed_doctors=failed_doctors,
-            excluded_doctors=excluded_doctors,
-        ),
-    )
+    try:
+        DB.set_check_cache(
+            user_id=user.id,
+            signature=CheckerApp.get_check_cache_signature(user),
+            payload=CheckerApp.serialize_check_snapshot(
+                matches=matches,
+                checked_doctors=checked_doctors,
+                failed_doctors=failed_doctors,
+                excluded_doctors=excluded_doctors,
+            ),
+        )
+    except Exception as exc:
+        # Кэш — оптимизация. Его ошибка не должна останавливать мониторинг.
+        logger.warning(
+            "Failed to save /check cache for user %s: %s",
+            user.id,
+            exc,
+        )
 
 
 def raw_sql_checker():
