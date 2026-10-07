@@ -66,6 +66,7 @@ class SqliteDb:
             target_district_id TEXT,
             target_lpu_id INTEGER,
             target_specialty_id TEXT,
+            exclude_duty_doctor INTEGER DEFAULT 0 NOT NULL,
             FOREIGN KEY (doctor_id) REFERENCES doctors (id)
         );"""
         self.cursor.execute(q)
@@ -111,6 +112,10 @@ class SqliteDb:
             self.cursor.execute(
                 "ALTER TABLE users ADD COLUMN target_specialty_id TEXT;"
             )
+        if "exclude_duty_doctor" not in columns:
+            self.cursor.execute(
+                "ALTER TABLE users ADD COLUMN exclude_duty_doctor INTEGER DEFAULT 0;"
+            )
         self.cursor.execute(
             "UPDATE users SET watch_mode = 'doctor' WHERE watch_mode IS NULL;"
         )
@@ -148,9 +153,10 @@ class SqliteDb:
         (
             id, ping_status, doctor_id, last_seen, limit_days,
             time_from_minutes, time_to_minutes, watch_mode,
-            target_district_id, target_lpu_id, target_specialty_id
+            target_district_id, target_lpu_id, target_specialty_id,
+            exclude_duty_doctor
         )
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         if user.last_seen is None:
             user.last_seen = datetime.datetime.now(datetime.UTC)
@@ -170,6 +176,7 @@ class SqliteDb:
                 user.target_district_id,
                 user.target_lpu_id,
                 user.target_specialty_id,
+                user.exclude_duty_doctor,
             ),
         )
         self.connection.commit()
@@ -189,7 +196,8 @@ class SqliteDb:
             watch_mode,
             target_district_id,
             target_lpu_id,
-            target_specialty_id
+            target_specialty_id,
+            exclude_duty_doctor
         FROM users WHERE id = ?"""
         result = self.cursor.execute(q, (user_id,)).fetchone()
         if result is None:
@@ -206,6 +214,7 @@ class SqliteDb:
             target_district_id,
             target_lpu_id,
             target_specialty_id,
+            exclude_duty_doctor,
         ) = result
         timestamp = datetime.datetime.fromisoformat(last_seen)
         return DbUser(
@@ -220,6 +229,7 @@ class SqliteDb:
             target_district_id=target_district_id,
             target_lpu_id=target_lpu_id,
             target_specialty_id=target_specialty_id,
+            exclude_duty_doctor=bool(exclude_duty_doctor),
         )
 
     def add_doctor(self, doctor: DbDoctorToCreate) -> str:
@@ -353,6 +363,16 @@ class SqliteDb:
 
         if ping_status and not was_active:
             self.clear_seen_appointments(user_id)
+
+    def set_exclude_duty_doctor(self, user_id: int, exclude: bool) -> None:
+        """Включает или отключает дежурного врача в specialty-wide поиске."""
+        self.cursor.execute(
+            "UPDATE users SET exclude_duty_doctor = ? WHERE id = ?;",
+            (int(exclude), user_id),
+        )
+        self.connection.commit()
+        # Настройка меняет набор подходящих талонов, поэтому начинаем новый снимок.
+        self.clear_seen_appointments(user_id)
 
     def set_user_specialty_watch(
         self,
@@ -679,7 +699,8 @@ class SqliteDb:
             watch_mode,
             target_district_id,
             target_lpu_id,
-            target_specialty_id
+            target_specialty_id,
+            exclude_duty_doctor
         FROM users
         WHERE
             ping_status == 1
@@ -703,6 +724,7 @@ class SqliteDb:
                 target_district_id=row[8],
                 target_lpu_id=row[9],
                 target_specialty_id=row[10],
+                exclude_duty_doctor=bool(row[11]),
             )
             key = f"{row[8]}:{row[9]}:{row[10]}"
             if key not in grouped:
