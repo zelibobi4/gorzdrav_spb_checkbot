@@ -176,6 +176,17 @@ def raw_sql_specialty_checker():
             successful_current_keys: set[str] = set()
 
             for doctor, appointments in appointments_by_doctor:
+                if (
+                    user.exclude_duty_doctor
+                    and CheckerApp.is_duty_doctor_name(doctor.name)
+                ):
+                    logger.debug(
+                        "duty doctor excluded for user %s: %s",
+                        user.id,
+                        doctor.name,
+                    )
+                    continue
+
                 user_appointments = CheckerApp.filter_appointments_for_user(
                     appointments=appointments,
                     user=user,

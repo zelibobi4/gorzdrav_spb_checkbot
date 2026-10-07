@@ -110,8 +110,10 @@ def test_existing_database_is_migrated_without_losing_user():
         assert "target_district_id" in columns
         assert "target_lpu_id" in columns
         assert "target_specialty_id" in columns
+        assert "exclude_duty_doctor" in columns
         assert user is not None
         assert user.watch_mode == "doctor"
+        assert user.exclude_duty_doctor is False
         assert user.id == 123
         assert user.ping_status is True
         db.connection.close()
