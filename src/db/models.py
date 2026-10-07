@@ -24,6 +24,7 @@ users_table = sa.Table(
     sa.Column("target_district_id", sa.String),
     sa.Column("target_lpu_id", sa.Integer),
     sa.Column("target_specialty_id", sa.String),
+    sa.Column("exclude_duty_doctor", sa.Boolean, default=False),
 )
 
 
@@ -57,6 +58,7 @@ class UserOrm(Base):
     target_district_id: Mapped[str | None] = mapped_column(default=None)
     target_lpu_id: Mapped[int | None] = mapped_column(default=None)
     target_specialty_id: Mapped[str | None] = mapped_column(default=None)
+    exclude_duty_doctor: Mapped[bool] = mapped_column(default=False)
 
     @property
     def ping_status_str(self) -> str:
