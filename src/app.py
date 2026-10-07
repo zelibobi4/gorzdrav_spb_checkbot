@@ -1081,7 +1081,11 @@ def check_now(message: Message):
             limit_days=user.limit_days,
             time_from_minutes=user.time_from_minutes,
             time_to_minutes=user.time_to_minutes,
-            exclude_duty_doctor=user.exclude_duty_doctor,
+            exclude_duty_doctor=(
+                user.exclude_duty_doctor
+                if user.watch_mode == "specialty"
+                else None
+            ),
             ping_status=bool(user.ping_status),
         )
     except Exception as exc:
