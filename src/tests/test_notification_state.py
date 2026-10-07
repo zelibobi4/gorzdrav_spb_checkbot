@@ -2,6 +2,7 @@ import datetime
 import os
 import random
 
+from core.checker_app import CheckerApp
 from db.sqlite_db import SqliteDb
 from gorzdrav.models import ApiAppointment
 from models.pydantic_models import DbUser
@@ -202,3 +203,149 @@ def test_manual_check_specific_doctor_omits_duty_filter_line():
 
     assert "Проверено врачей: 1." in message
     assert "Дежурный врач:" not in message
+
+
+def test_check_cache_roundtrip_and_expiry():
+    db, path = _make_db()
+    try:
+        db.add_user(DbUser(id=1, ping_status=True))
+        db.set_check_cache(
+            user_id=1,
+            signature="settings-a",
+            payload='{"matches":[]}',
+        )
+
+        cached = db.get_fresh_check_cache(
+            user_id=1,
+            signature="settings-a",
+            max_age_seconds=60,
+        )
+        assert cached is not None
+        payload, age_seconds = cached
+        assert payload == '{"matches":[]}'
+        assert 0 <= age_seconds <= 2
+
+        db.cursor.execute(
+            """
+            UPDATE user_check_cache
+            SET checked_at = ?
+            WHERE user_id = ?;
+            """,
+            (
+                (
+                    datetime.datetime.now(datetime.UTC)
+                    - datetime.timedelta(seconds=120)
+                ).isoformat(),
+                1,
+            ),
+        )
+        db.connection.commit()
+
+        assert (
+            db.get_fresh_check_cache(
+                user_id=1,
+                signature="settings-a",
+                max_age_seconds=60,
+            )
+            is None
+        )
+    finally:
+        db.connection.close()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_check_cache_rejected_when_search_settings_changed():
+    db, path = _make_db()
+    try:
+        user = DbUser(
+            id=1,
+            ping_status=True,
+            watch_mode="specialty",
+            target_district_id="10",
+            target_lpu_id=123,
+            target_specialty_id="dentist",
+            limit_days=15,
+            time_from_minutes=18 * 60,
+            time_to_minutes=23 * 60,
+            exclude_duty_doctor=True,
+        )
+        db.add_user(user)
+
+        signature = CheckerApp.get_check_cache_signature(user)
+        db.set_check_cache(
+            user_id=1,
+            signature=signature,
+            payload='{"matches":[]}',
+        )
+
+        changed_user = user.model_copy(update={"time_from_minutes": 17 * 60})
+        changed_signature = CheckerApp.get_check_cache_signature(changed_user)
+
+        assert changed_signature != signature
+        assert (
+            db.get_fresh_check_cache(
+                user_id=1,
+                signature=changed_signature,
+                max_age_seconds=60,
+            )
+            is None
+        )
+    finally:
+        db.connection.close()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_check_snapshot_serialization_roundtrip():
+    appointment = ApiAppointment(
+        id="slot-1",
+        visitStart=datetime.datetime(2030, 1, 1, 18, 30),
+        visitEnd=datetime.datetime(2030, 1, 1, 18, 45),
+        number=1,
+        room="12",
+    )
+    matches = [
+        (
+            "Иванов Иван Иванович",
+            appointment,
+            "https://example.test/doctor-1",
+        )
+    ]
+
+    payload = CheckerApp.serialize_check_snapshot(
+        matches=matches,
+        checked_doctors=29,
+        failed_doctors=1,
+        excluded_doctors=1,
+    )
+    restored, checked, failed, excluded = (
+        CheckerApp.deserialize_check_snapshot(payload)
+    )
+
+    assert checked == 29
+    assert failed == 1
+    assert excluded == 1
+    assert len(restored) == 1
+    assert restored[0][0] == "Иванов Иван Иванович"
+    assert restored[0][1].id == "slot-1"
+    assert restored[0][1].visitStart == appointment.visitStart
+    assert restored[0][2] == "https://example.test/doctor-1"
+
+
+def test_manual_check_message_marks_cached_result():
+    message = TgMessageComposer.get_manual_check_message_md(
+        matches=[],
+        checked_doctors=29,
+        failed_doctors=0,
+        excluded_doctors=1,
+        limit_days=15,
+        time_from_minutes=18 * 60,
+        time_to_minutes=23 * 60,
+        exclude_duty_doctor=True,
+        ping_status=True,
+        cache_age_seconds=17,
+    )
+
+    assert "17 сек. назад" in message
+    assert "без новых запросов к API" in message
