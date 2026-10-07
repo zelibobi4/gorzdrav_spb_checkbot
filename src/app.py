@@ -1088,11 +1088,11 @@ def check_now(message: Message):
             ),
             ping_status=bool(user.ping_status),
         )
-    except Exception as exc:
+    except Exception:
         logger.exception("Manual /check failed for user %s", user.id)
         result_text = (
             "❌ Не удалось выполнить ручную проверку талонов.\n"
-            f"Ошибка: {exc}\n"
+            "Попробуйте ещё раз чуть позже.\n"
             "Фоновое отслеживание и его настройки не изменены."
         )
 
