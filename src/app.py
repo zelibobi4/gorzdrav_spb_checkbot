@@ -389,6 +389,8 @@ def get_help(message: Message):
         + "/evening - искать только вечерние талоны после 17:00\n"
         + "/time 17:00-21:00 - задать свой диапазон времени\n"
         + "/time_off - сбросить фильтр времени\n"
+        + "/duty_off - исключить «Дежурного врача» из режима «любой врач»\n"
+        + "/duty_on - снова учитывать «Дежурного врача»\n"
         + "/delete - удалить профиль пользователя\n"
         + "/state - узнать текущее состояние бота\n\n"
         + "/set_doctor - выбрать врача или режим «любой врач специальности»"
@@ -753,12 +755,23 @@ def set_doctor(call: CallbackQuery):
         ping_text = (
             "включено" if user is not None and user.ping_status else "отключено"
         )
+        duty_text = (
+            "исключён"
+            if user is not None and user.exclude_duty_doctor
+            else "учитывается"
+        )
+        duty_hint = (
+            "/duty_on — снова учитывать"
+            if user is not None and user.exclude_duty_doctor
+            else "/duty_off — исключить"
+        )
         bot.send_message(
             chat_id=call.message.chat.id,
             text=(
                 "Выбран режим: любой врач выбранной специальности.\n"
                 + f"Медучреждение: {lpu.lpuFullName or lpu.address or lpu.id}.\n"
-                + f"Отслеживание сейчас {ping_text}.\n\n"
+                + f"Отслеживание сейчас {ping_text}.\n"
+                + f"Дежурный врач: {duty_text} ({duty_hint}).\n\n"
                 + "Можно задать /evening или /time 17:00-21:00, "
                 + "а затем включить /on."
             ),
@@ -824,6 +837,34 @@ def id_message(message: Message):
     )
 
 
+@bot.message_handler(commands=["duty_off"])  # type: ignore
+@is_user_profile
+def duty_doctor_off(message: Message):
+    """Исключает служебного «Дежурного врача» из specialty-wide поиска."""
+    if message.from_user is None:
+        return
+    DB.set_exclude_duty_doctor(user_id=message.from_user.id, exclude=True)
+    bot.reply_to(
+        message,
+        "Дежурный врач исключён из режима «любой врач специальности».\n"
+        "Обычные врачи продолжат отслеживаться. Вернуть: /duty_on",
+    )
+
+
+@bot.message_handler(commands=["duty_on"])  # type: ignore
+@is_user_profile
+def duty_doctor_on(message: Message):
+    """Возвращает служебного «Дежурного врача» в specialty-wide поиск."""
+    if message.from_user is None:
+        return
+    DB.set_exclude_duty_doctor(user_id=message.from_user.id, exclude=False)
+    bot.reply_to(
+        message,
+        "Дежурный врач снова учитывается в режиме «любой врач специальности».\n"
+        "Исключить: /duty_off",
+    )
+
+
 @bot.message_handler(commands=["on"])  # type: ignore
 @is_user_profile
 @is_user_have_doctor
@@ -849,6 +890,10 @@ def ping_on(message: Message):
         + f"{f'в пределах {user.limit_days} дней ' if user.limit_days else ''}"
         + f"включено{time_filter_text}"
     )
+    if user.watch_mode == "specialty":
+        duty_text = "исключён" if user.exclude_duty_doctor else "учитывается"
+        duty_hint = "/duty_on" if user.exclude_duty_doctor else "/duty_off"
+        text += f"\nДежурный врач: {duty_text}. Изменить: {duty_hint}"
     bot.reply_to(message=message, text=text)  # type: ignore
 
 
@@ -931,12 +976,19 @@ def get_status(message: Message):
             if specialty is not None and specialty.name
             else f"ID {user.target_specialty_id}"
         )
+        duty_text = (
+            "исключён из поиска"
+            if user.exclude_duty_doctor
+            else "учитывается"
+        )
+        duty_hint = "/duty_on — вернуть" if user.exclude_duty_doctor else "/duty_off — исключить"
         text = (
             f"Режим: любой врач специальности «{specialty_name}».\n"
             + f"Медучреждение: {lpu.lpuFullName or lpu.address or lpu.id}.\n"
             + f"{ping_text}\n"
             + f"{limit_days_text}\n"
-            + time_filter_text
+            + f"{time_filter_text}\n"
+            + f"Дежурный врач: {duty_text} ({duty_hint})."
         )
         bot.reply_to(
             message=message,
