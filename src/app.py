@@ -969,11 +969,19 @@ def check_now(message: Message):
         return
 
     cache_signature = CheckerApp.get_check_cache_signature(user)
-    cached = DB.get_fresh_check_cache(
-        user_id=user.id,
-        signature=cache_signature,
-        max_age_seconds=Config.CHECK_CACHE_TTL_SECS,
-    )
+    try:
+        cached = DB.get_fresh_check_cache(
+            user_id=user.id,
+            signature=cache_signature,
+            max_age_seconds=Config.CHECK_CACHE_TTL_SECS,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to read /check cache for user %s: %s",
+            user.id,
+            exc,
+        )
+        cached = None
     if cached is not None:
         payload, cache_age_seconds = cached
         try:
@@ -1116,16 +1124,23 @@ def check_now(message: Message):
                         for appointment in filtered
                     )
 
-        DB.set_check_cache(
-            user_id=user.id,
-            signature=cache_signature,
-            payload=CheckerApp.serialize_check_snapshot(
-                matches=matches,
-                checked_doctors=checked_doctors,
-                failed_doctors=failed_doctors,
-                excluded_doctors=excluded_doctors,
-            ),
-        )
+        try:
+            DB.set_check_cache(
+                user_id=user.id,
+                signature=cache_signature,
+                payload=CheckerApp.serialize_check_snapshot(
+                    matches=matches,
+                    checked_doctors=checked_doctors,
+                    failed_doctors=failed_doctors,
+                    excluded_doctors=excluded_doctors,
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to save live /check cache for user %s: %s",
+                user.id,
+                exc,
+            )
 
         result_text = TgMessageComposer.get_manual_check_message_md(
             matches=matches,
