@@ -44,6 +44,7 @@ class SqliteDb:
         self.create_table_users()
         self.migrate_users_table()
         self.create_table_seen_appointments()
+        self.create_table_check_cache()
 
     def create_table_users(self):
         """
@@ -78,6 +79,18 @@ class SqliteDb:
             user_id INTEGER NOT NULL,
             appointment_key TEXT NOT NULL,
             PRIMARY KEY (user_id, appointment_key),
+            FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+        );"""
+        self.cursor.execute(q)
+        self.connection.commit()
+
+    def create_table_check_cache(self) -> None:
+        """Межпроцессный кэш свежего результата ручной проверки."""
+        q = """CREATE TABLE IF NOT EXISTS user_check_cache (
+            user_id INTEGER PRIMARY KEY,
+            signature TEXT NOT NULL,
+            checked_at TEXT NOT NULL,
+            payload TEXT NOT NULL,
             FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
         );"""
         self.cursor.execute(q)
@@ -342,6 +355,70 @@ class SqliteDb:
         """Сбрасывает антиспам-снимок пользователя."""
         self.set_seen_appointment_keys(user_id=user_id, appointment_keys=set())
 
+    def set_check_cache(
+        self,
+        user_id: int,
+        signature: str,
+        payload: str,
+    ) -> None:
+        """Сохраняет последний результат проверки пользователя."""
+        checked_at = datetime.datetime.now(datetime.UTC).isoformat()
+        self.cursor.execute(
+            """
+            INSERT INTO user_check_cache (user_id, signature, checked_at, payload)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                signature = excluded.signature,
+                checked_at = excluded.checked_at,
+                payload = excluded.payload;
+            """,
+            (user_id, signature, checked_at, payload),
+        )
+        self.connection.commit()
+
+    def get_fresh_check_cache(
+        self,
+        user_id: int,
+        signature: str,
+        max_age_seconds: int,
+    ) -> tuple[str, int] | None:
+        """Возвращает payload и возраст кэша, если он свежий и настройки совпадают."""
+        row = self.cursor.execute(
+            """
+            SELECT signature, checked_at, payload
+            FROM user_check_cache
+            WHERE user_id = ?;
+            """,
+            (user_id,),
+        ).fetchone()
+        if row is None or row[0] != signature:
+            return None
+
+        checked_at = datetime.datetime.fromisoformat(row[1])
+        if checked_at.tzinfo is None:
+            checked_at = checked_at.replace(tzinfo=datetime.UTC)
+
+        age_seconds = max(
+            0,
+            int(
+                (
+                    datetime.datetime.now(datetime.UTC) - checked_at
+                ).total_seconds()
+            ),
+        )
+        if age_seconds > max_age_seconds:
+            return None
+
+        return row[2], age_seconds
+
+    def clear_check_cache(self, user_id: int) -> None:
+        """Удаляет сохранённый результат /check пользователя."""
+        self.cursor.execute(
+            "DELETE FROM user_check_cache WHERE user_id = ?;",
+            (user_id,),
+        )
+        self.connection.commit()
+
     def set_user_ping_status(self, user_id: int, ping_status: bool) -> None:
         """
         Устанавливает значение ping_status для пользователя с user_id.
@@ -464,6 +541,10 @@ class SqliteDb:
         """
         self.cursor.execute(
             "DELETE FROM user_seen_appointments WHERE user_id = ?;",
+            (user_id,),
+        )
+        self.cursor.execute(
+            "DELETE FROM user_check_cache WHERE user_id = ?;",
             (user_id,),
         )
         q = """DELETE FROM users WHERE id = ?"""

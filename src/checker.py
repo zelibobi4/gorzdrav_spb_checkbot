@@ -8,6 +8,7 @@ from depends import sqlite_db as DB
 from gorzdrav.api import Gorzdrav
 from gorzdrav.exceptions import GorzdravExceptionBase
 from gorzdrav.models import ApiAppointment, ApiDoctor, Doctor
+from models.pydantic_models import DbUser
 from queries.orm import SyncOrm
 from telegram.message_composer import TgMessageComposer
 from telegram.types import TGParseMode
@@ -38,6 +39,34 @@ def _appointment_key(doctor_id: str, appointment: ApiAppointment) -> str:
     return f"{doctor_id}:{appointment.visitStart.isoformat()}"
 
 
+def _save_check_snapshot(
+    user: DbUser,
+    matches: list[tuple[str, ApiAppointment, str]],
+    checked_doctors: int,
+    failed_doctors: int,
+    excluded_doctors: int,
+) -> None:
+    """Сохраняет свежий результат фоновой проверки для быстрого /check."""
+    try:
+        DB.set_check_cache(
+            user_id=user.id,
+            signature=CheckerApp.get_check_cache_signature(user),
+            payload=CheckerApp.serialize_check_snapshot(
+                matches=matches,
+                checked_doctors=checked_doctors,
+                failed_doctors=failed_doctors,
+                excluded_doctors=excluded_doctors,
+            ),
+        )
+    except Exception as exc:
+        # Кэш — оптимизация. Его ошибка не должна останавливать мониторинг.
+        logger.warning(
+            "Failed to save /check cache for user %s: %s",
+            user.id,
+            exc,
+        )
+
+
 def raw_sql_checker():
     """Проверяет конкретных врачей и уведомляет только о новых подходящих талонах."""
     active_docs_with_users = DB.get_active_doctors_joined_users()
@@ -54,9 +83,25 @@ def raw_sql_checker():
         except Exception as e:
             logger.info("Gorzdrav exception: %s", str(e))
             logger.debug("Exception traceback: %s", traceback.format_exc())
+            for user in doc_with_users.pinging_users:
+                _save_check_snapshot(
+                    user=user,
+                    matches=[],
+                    checked_doctors=0,
+                    failed_doctors=1,
+                    excluded_doctors=0,
+                )
             continue
 
         if api_doctor is None:
+            for user in doc_with_users.pinging_users:
+                _save_check_snapshot(
+                    user=user,
+                    matches=[],
+                    checked_doctors=0,
+                    failed_doctors=1,
+                    excluded_doctors=0,
+                )
             continue
 
         try:
@@ -73,6 +118,14 @@ def raw_sql_checker():
                 str(e),
             )
             logger.debug("Exception traceback: %s", traceback.format_exc())
+            for user in doc_with_users.pinging_users:
+                _save_check_snapshot(
+                    user=user,
+                    matches=[],
+                    checked_doctors=0,
+                    failed_doctors=1,
+                    excluded_doctors=0,
+                )
             continue
 
         doctor_link: str = Gorzdrav.generate_link(
@@ -87,6 +140,18 @@ def raw_sql_checker():
                 appointments=appointments,
                 user=user,
             )
+            current_matches = [
+                (api_doctor.name, appointment, doctor_link)
+                for appointment in user_appointments
+            ]
+            _save_check_snapshot(
+                user=user,
+                matches=current_matches,
+                checked_doctors=1,
+                failed_doctors=0,
+                excluded_doctors=0,
+            )
+
             current_keys = {
                 _appointment_key(doc_with_users.doctorId, appointment)
                 for appointment in user_appointments
@@ -143,13 +208,29 @@ def raw_sql_specialty_checker():
         except Exception as e:
             logger.info("Gorzdrav specialty exception: %s", str(e))
             logger.debug("Exception traceback: %s", traceback.format_exc())
+            for user in specialty_with_users.pinging_users:
+                _save_check_snapshot(
+                    user=user,
+                    matches=[],
+                    checked_doctors=0,
+                    failed_doctors=1,
+                    excluded_doctors=0,
+                )
             continue
 
         if not doctors:
+            for user in specialty_with_users.pinging_users:
+                _save_check_snapshot(
+                    user=user,
+                    matches=[],
+                    checked_doctors=0,
+                    failed_doctors=0,
+                    excluded_doctors=0,
+                )
             continue
 
         appointments_by_doctor: list[tuple[ApiDoctor, list[ApiAppointment]]] = []
-        failed_doctor_ids: set[str] = set()
+        failed_doctors_by_id: dict[str, str] = {}
 
         for doctor in doctors:
             try:
@@ -160,7 +241,7 @@ def raw_sql_specialty_checker():
             except Exception as e:
                 # Не считаем талоны врача исчезнувшими при 5xx/timeout:
                 # просто сохраняем его часть предыдущего снимка.
-                failed_doctor_ids.add(doctor.id)
+                failed_doctors_by_id[doctor.id] = doctor.name
                 logger.info(
                     "Gorzdrav appointments exception for doctor %s: %s",
                     doctor.id,
@@ -174,18 +255,23 @@ def raw_sql_specialty_checker():
         for user in specialty_with_users.pinging_users:
             matches: list[tuple[str, ApiAppointment, str]] = []
             successful_current_keys: set[str] = set()
+            checked_doctors = 0
+            excluded_doctors = 0
 
             for doctor, appointments in appointments_by_doctor:
                 if (
                     user.exclude_duty_doctor
                     and CheckerApp.is_duty_doctor_name(doctor.name)
                 ):
+                    excluded_doctors += 1
                     logger.debug(
                         "duty doctor excluded for user %s: %s",
                         user.id,
                         doctor.name,
                     )
                     continue
+
+                checked_doctors += 1
 
                 user_appointments = CheckerApp.filter_appointments_for_user(
                     appointments=appointments,
@@ -207,11 +293,29 @@ def raw_sql_specialty_checker():
                         (doctor.name, appointment, doctor_link)
                     )
 
+            relevant_failed_ids: set[str] = set()
+            for doctor_id, doctor_name in failed_doctors_by_id.items():
+                if (
+                    user.exclude_duty_doctor
+                    and CheckerApp.is_duty_doctor_name(doctor_name)
+                ):
+                    excluded_doctors += 1
+                else:
+                    relevant_failed_ids.add(doctor_id)
+
+            _save_check_snapshot(
+                user=user,
+                matches=matches,
+                checked_doctors=checked_doctors,
+                failed_doctors=len(relevant_failed_ids),
+                excluded_doctors=excluded_doctors,
+            )
+
             previous_keys = DB.get_seen_appointment_keys(user.id)
 
             # Для врачей, чей endpoint в этом цикле упал, не делаем вывод,
             # что их старые талоны исчезли. Их ключи временно сохраняются.
-            failed_prefixes = tuple(f"{doctor_id}:" for doctor_id in failed_doctor_ids)
+            failed_prefixes = tuple(f"{doctor_id}:" for doctor_id in relevant_failed_ids)
             preserved_failed_keys = (
                 {
                     key
@@ -231,7 +335,7 @@ def raw_sql_specialty_checker():
                     "no new specialty appointments for user %s; current=%s; failed_doctors=%s",
                     user.id,
                     len(successful_current_keys),
-                    len(failed_doctor_ids),
+                    len(relevant_failed_ids),
                 )
                 continue
 

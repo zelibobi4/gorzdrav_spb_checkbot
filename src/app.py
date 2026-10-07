@@ -968,6 +968,64 @@ def check_now(message: Message):
     if user is None:
         return
 
+    cache_signature = CheckerApp.get_check_cache_signature(user)
+    try:
+        cached = DB.get_fresh_check_cache(
+            user_id=user.id,
+            signature=cache_signature,
+            max_age_seconds=Config.CHECK_CACHE_TTL_SECS,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to read /check cache for user %s: %s",
+            user.id,
+            exc,
+        )
+        cached = None
+    if cached is not None:
+        payload, cache_age_seconds = cached
+        try:
+            (
+                cached_matches,
+                cached_checked_doctors,
+                cached_failed_doctors,
+                cached_excluded_doctors,
+            ) = CheckerApp.deserialize_check_snapshot(payload)
+        except Exception:
+            logger.exception("Broken /check cache for user %s", user.id)
+            try:
+                DB.clear_check_cache(user.id)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to clear broken /check cache for user %s: %s",
+                    user.id,
+                    exc,
+                )
+        else:
+            result_text = TgMessageComposer.get_manual_check_message_md(
+                matches=cached_matches,
+                checked_doctors=cached_checked_doctors,
+                failed_doctors=cached_failed_doctors,
+                excluded_doctors=cached_excluded_doctors,
+                limit_days=user.limit_days,
+                time_from_minutes=user.time_from_minutes,
+                time_to_minutes=user.time_to_minutes,
+                exclude_duty_doctor=(
+                    user.exclude_duty_doctor
+                    if user.watch_mode == "specialty"
+                    else None
+                ),
+                ping_status=bool(user.ping_status),
+                cache_age_seconds=cache_age_seconds,
+            )
+            bot.reply_to(
+                message,
+                result_text,
+                parse_mode="markdown",
+                disable_web_page_preview=True,
+            )
+            return
+
     progress = bot.reply_to(
         message,
         "🔎 Проверяю талоны прямо сейчас…\n"
@@ -1072,6 +1130,24 @@ def check_now(message: Message):
                         (api_doctor.name, appointment, doctor_link)
                         for appointment in filtered
                     )
+
+        try:
+            DB.set_check_cache(
+                user_id=user.id,
+                signature=cache_signature,
+                payload=CheckerApp.serialize_check_snapshot(
+                    matches=matches,
+                    checked_doctors=checked_doctors,
+                    failed_doctors=failed_doctors,
+                    excluded_doctors=excluded_doctors,
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to save live /check cache for user %s: %s",
+                user.id,
+                exc,
+            )
 
         result_text = TgMessageComposer.get_manual_check_message_md(
             matches=matches,

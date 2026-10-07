@@ -19,6 +19,7 @@ class TgMessageComposer:
         time_to_minutes: int | None,
         exclude_duty_doctor: bool | None,
         ping_status: bool,
+        cache_age_seconds: int | None = None,
     ) -> str:
         """Формирует результат ручной /check без изменения состояния мониторинга."""
         sorted_matches = sorted(matches, key=lambda item: item[1].visitStart)
@@ -75,6 +76,13 @@ class TgMessageComposer:
             time_text = f"{time_from}–{time_to}"
 
         monitoring_text = "включено" if ping_status else "выключено"
+        if cache_age_seconds is None:
+            source_text = "Источник: запрос к API сейчас."
+        else:
+            source_text = (
+                "Источник: свежие данные проверки, "
+                + f"{cache_age_seconds} сек. назад (без новых запросов к API)."
+            )
 
         stats = (
             f"\n\nПроверено врачей: {checked_doctors}."
@@ -95,6 +103,7 @@ class TgMessageComposer:
                 else ""
             )
             + f"\nОтслеживание: {monitoring_text}."
+            + f"\n{source_text}"
             + "\n\nРучная проверка не меняет отслеживание и антиспам."
         )
         return result_text + stats
