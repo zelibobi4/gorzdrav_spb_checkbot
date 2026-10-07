@@ -20,6 +20,7 @@ from telebot.util import extract_command, is_command
 import checker
 import gorzdrav.models as api_models
 from config import Config
+from core.checker_app import CheckerApp
 from depends import sqlite_db as DB
 from gorzdrav.api import Gorzdrav
 from gorzdrav.exceptions import GorzdravExceptionBase
@@ -51,6 +52,7 @@ bot = telebot.TeleBot(
 def configure_bot_commands() -> None:
     """Публикует основные команды в меню Telegram."""
     commands = [
+        BotCommand("check", "проверить свободные талоны прямо сейчас"),
         BotCommand("status", "текущие настройки отслеживания"),
         BotCommand("set_doctor", "выбрать врача или специальность"),
         BotCommand("on", "включить отслеживание"),
@@ -401,7 +403,8 @@ def start_message(message: Message):
 def get_help(message: Message):
     text = (
         "/start - создать профиль пользователя\n"
-        + "/status - узнать текущий статус талонов у врача\n"
+        + "/check - проверить свободные талоны прямо сейчас\n"
+        + "/status - узнать текущий статус и настройки\n"
         + "/on - включить отслеживание талонов\n"
         + "/off - отключить отслеживание талонов\n"
         + "/1 - установить просмотр мест в течении сегодняшнего дня\n"
@@ -949,6 +952,156 @@ def delete_user(message: Message):
     bot.reply_to(  # type: ignore
         message=message,
         text="Ваш профиль удалён.\n" + "Выполните команду /start за создания профиля.",
+    )
+
+
+@bot.message_handler(commands=["check"])  # type: ignore
+@is_user_profile
+@is_user_have_doctor
+def check_now(message: Message):
+    """Ручная проверка текущих талонов без изменения мониторинга и антиспама."""
+    if message.from_user is None:
+        return
+
+    user_id = message.from_user.id
+    user = DB.get_user(user_id=user_id)
+    if user is None:
+        return
+
+    progress = bot.reply_to(
+        message,
+        "🔎 Проверяю талоны прямо сейчас…\n"
+        "Это может занять некоторое время.",
+    )
+
+    matches: list[tuple[str, api_models.ApiAppointment, str]] = []
+    checked_doctors = 0
+    failed_doctors = 0
+    excluded_doctors = 0
+
+    try:
+        if (
+            user.watch_mode == "specialty"
+            and user.target_district_id is not None
+            and user.target_lpu_id is not None
+            and user.target_specialty_id is not None
+        ):
+            doctors = Gorzdrav.get_doctors(
+                lpuId=user.target_lpu_id,
+                specialtyId=user.target_specialty_id,
+            )
+
+            for doctor in doctors:
+                if (
+                    user.exclude_duty_doctor
+                    and CheckerApp.is_duty_doctor_name(doctor.name)
+                ):
+                    excluded_doctors += 1
+                    continue
+
+                try:
+                    appointments = Gorzdrav.get_appointments(
+                        lpuId=user.target_lpu_id,
+                        doctorId=doctor.id,
+                    )
+                except Exception as exc:
+                    failed_doctors += 1
+                    logger.info(
+                        "Manual check appointments exception for doctor %s: %s",
+                        doctor.id,
+                        exc,
+                    )
+                    continue
+
+                checked_doctors += 1
+                filtered = CheckerApp.filter_appointments_for_user(
+                    appointments=appointments,
+                    user=user,
+                )
+                if not filtered:
+                    continue
+
+                doctor_link = Gorzdrav.generate_link(
+                    districtId=user.target_district_id,
+                    lpuId=user.target_lpu_id,
+                    specialtyId=user.target_specialty_id,
+                    scheduleId=doctor.id,
+                )
+                matches.extend(
+                    (doctor.name, appointment, doctor_link)
+                    for appointment in filtered
+                )
+        else:
+            db_doctor = DB.get_user_doctor(user_id=user.id)
+            if db_doctor is None:
+                raise RuntimeError("У пользователя не выбран врач")
+
+            api_doctor = Gorzdrav.get_doctor(
+                lpuId=db_doctor.lpuId,
+                specialtyId=db_doctor.specialtyId,
+                doctorId=db_doctor.doctorId,
+            )
+            if api_doctor is None:
+                failed_doctors = 1
+            else:
+                try:
+                    appointments = Gorzdrav.get_appointments(
+                        lpuId=db_doctor.lpuId,
+                        doctorId=db_doctor.doctorId,
+                    )
+                except Exception as exc:
+                    failed_doctors = 1
+                    logger.info(
+                        "Manual check appointments exception for doctor %s: %s",
+                        db_doctor.doctorId,
+                        exc,
+                    )
+                else:
+                    checked_doctors = 1
+                    filtered = CheckerApp.filter_appointments_for_user(
+                        appointments=appointments,
+                        user=user,
+                    )
+                    doctor_link = Gorzdrav.generate_link(
+                        districtId=db_doctor.districtId,
+                        lpuId=db_doctor.lpuId,
+                        specialtyId=db_doctor.specialtyId,
+                        scheduleId=db_doctor.doctorId,
+                    )
+                    matches.extend(
+                        (api_doctor.name, appointment, doctor_link)
+                        for appointment in filtered
+                    )
+
+        result_text = TgMessageComposer.get_manual_check_message_md(
+            matches=matches,
+            checked_doctors=checked_doctors,
+            failed_doctors=failed_doctors,
+            excluded_doctors=excluded_doctors,
+            limit_days=user.limit_days,
+            time_from_minutes=user.time_from_minutes,
+            time_to_minutes=user.time_to_minutes,
+            exclude_duty_doctor=(
+                user.exclude_duty_doctor
+                if user.watch_mode == "specialty"
+                else None
+            ),
+            ping_status=bool(user.ping_status),
+        )
+    except Exception:
+        logger.exception("Manual /check failed for user %s", user.id)
+        result_text = (
+            "❌ Не удалось выполнить ручную проверку талонов.\n"
+            "Попробуйте ещё раз чуть позже.\n"
+            "Фоновое отслеживание и его настройки не изменены."
+        )
+
+    bot.edit_message_text(
+        text=result_text,
+        chat_id=progress.chat.id,
+        message_id=progress.message_id,
+        parse_mode="markdown",
+        disable_web_page_preview=True,
     )
 
 
