@@ -17,7 +17,7 @@ class TgMessageComposer:
         limit_days: int | None,
         time_from_minutes: int | None,
         time_to_minutes: int | None,
-        exclude_duty_doctor: bool,
+        exclude_duty_doctor: bool | None,
         ping_status: bool,
     ) -> str:
         """Формирует результат ручной /check без изменения состояния мониторинга."""
@@ -74,7 +74,6 @@ class TgMessageComposer:
         else:
             time_text = f"{time_from}–{time_to}"
 
-        duty_text = "исключён" if exclude_duty_doctor else "учитывается"
         monitoring_text = "включено" if ping_status else "выключено"
 
         stats = (
@@ -90,7 +89,11 @@ class TgMessageComposer:
                 else ""
             )
             + f"\nФильтр: {days_text}, время {time_text}."
-            + f"\nДежурный врач: {duty_text}."
+            + (
+                f"\nДежурный врач: {'исключён' if exclude_duty_doctor else 'учитывается'}."
+                if exclude_duty_doctor is not None
+                else ""
+            )
             + f"\nОтслеживание: {monitoring_text}."
             + "\n\nРучная проверка не меняет отслеживание и антиспам."
         )
